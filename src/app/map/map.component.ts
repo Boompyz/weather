@@ -9,8 +9,10 @@ import VectorLayer from 'ol/layer/Vector';
 import VectorSource from 'ol/source/Vector';
 import Feature from 'ol/Feature';
 import Point from 'ol/geom/Point';
+import { SearchBarComponent, AutocompleteResult } from '../search-bar/search-bar.component';
 import { Style, Circle, Fill, Stroke, Icon, Text } from 'ol/style';
 import { XYZ } from 'ol/source';
+import { easeOut } from 'ol/easing';
 import { MapBrowserEvent } from 'ol';
 import { transform } from 'ol/proj';
 import { fromLonLat, toLonLat } from 'ol/proj';
@@ -29,10 +31,18 @@ register(proj4);
 @Component({
   selector: 'app-map',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, SearchBarComponent],
   template: `
     <div class="map-wrap">
       <div id="weather-map" class="map"></div>
+
+      <!-- Search bar overlay -->
+      <div class="search-overlay">
+        <app-search-bar
+          (locationSelected)="onSearchSelected($event)"
+          (locationPreview)="onSearchPreview($event)">
+        </app-search-bar>
+      </div>
 
       <!-- Map style toggle -->
       <div class="map-controls">
@@ -65,6 +75,14 @@ register(proj4);
       height: 100%;
       cursor: crosshair;
       background: #0d1117;
+    }
+    .search-overlay {
+      position: absolute;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: min(400px, calc(100% - 130px));
+      z-index: 20;
     }
     .map-controls {
       position: absolute;
@@ -160,6 +178,7 @@ export class MapComponent implements AfterViewInit, OnDestroy {
 
   private selectedMarkerSource = new VectorSource();
   private stationMarkerSource  = new VectorSource();
+  private previewMarkerSource  = new VectorSource();
   private bwLayer!: TileLayer<XYZ>;
   private colourLayer!: TileLayer<XYZ>;
   private satelliteLayer!: TileLayer<XYZ>;
@@ -210,6 +229,7 @@ export class MapComponent implements AfterViewInit, OnDestroy {
         this.colourLayer,
         this.satelliteLayer,
         new VectorLayer({ source: this.stationMarkerSource }),
+        new VectorLayer({ source: this.previewMarkerSource }),
         new VectorLayer({ source: this.selectedMarkerSource }),
       ],
       view: new View({
@@ -237,6 +257,45 @@ export class MapComponent implements AfterViewInit, OnDestroy {
         this.cursorInfo = `${lonLat[1].toFixed(4)}°N  ${lonLat[0].toFixed(4)}°E`;
       });
     });
+  }
+
+  /** Called when a search result is selected — fly to it and trigger station load */
+  onSearchSelected(result: AutocompleteResult): void {
+    this.previewMarkerSource.clear();
+    const coord = fromLonLat([result.lon, result.lat]);
+    this.map.getView().animate({
+      center: coord,
+      zoom: Math.min(result.z, 14),
+      duration: 800,
+      easing: easeOut
+    });
+    // Emit as a location click so the panel loads stations
+    this.ngZone.run(() => {
+      this.hasClicked = true;
+      this.placeSelectedMarker(coord);
+      this.locationSelected.emit({ lat: result.lat, lon: result.lon });
+    });
+  }
+
+  /** Show a preview pin while hovering a search result */
+  onSearchPreview(result: AutocompleteResult | null): void {
+    this.previewMarkerSource.clear();
+    if (!result) return;
+    const coord = fromLonLat([result.lon, result.lat]);
+    const pinSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="36" viewBox="0 0 28 36">
+      <path fill="#39d0f5" stroke="#0d1117" stroke-width="1.5"
+        d="M14 2C8.48 2 4 6.48 4 12c0 7 10 22 10 22s10-15 10-22c0-5.52-4.48-10-10-10z"/>
+      <circle cx="14" cy="12" r="4" fill="white" opacity="0.9"/>
+    </svg>`;
+    const pin = new Feature({ geometry: new Point(coord) });
+    pin.setStyle(new Style({
+      image: new Icon({
+        src: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(pinSvg),
+        anchor: [0.5, 1],
+        scale: 1.1
+      })
+    }));
+    this.previewMarkerSource.addFeature(pin);
   }
 
   setLayer(layer: 'colour' | 'bw' | 'satellite'): void {

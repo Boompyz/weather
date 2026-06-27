@@ -1,6 +1,6 @@
-import { Component, Input, Output, EventEmitter, OnChanges } from '@angular/core';
+import { Component, Input, Output, EventEmitter, OnChanges, ViewChild, ElementRef, inject, NgZone } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { StationForecast, WeatherStation } from '../weather.service';
+import { StationForecast, WeatherStation, WeatherService } from '../weather.service';
 import { ForecastChartComponent } from '../forecast-chart/forecast-chart.component';
 
 @Component({
@@ -114,13 +114,36 @@ import { ForecastChartComponent } from '../forecast-chart/forecast-chart.compone
           <app-forecast-chart [forecast]="selectedForecast"></app-forecast-chart>
         </div>
 
-        <!-- AI Export button -->
+        <!-- AI Export section -->
         <div class="ai-export">
           <button class="ai-btn" (click)="exportForAi()" [class.copied]="copied">
             <span class="material-icons">{{ copied ? 'check_circle' : 'content_copy' }}</span>
             {{ copied ? 'Copied!' : 'Copy AI-ready text' }}
           </button>
-          <span class="ai-hint">Paste into ChatGPT, Claude, or Gemini to ask questions about the forecast</span>
+
+          <!-- Text preview (always visible after first copy, even if clipboard fails) -->
+          <div class="ai-preview" *ngIf="displayAiText">
+            <div class="ai-preview-header">
+              <span class="ai-preview-label">
+                <span class="material-icons">smart_toy</span>
+                AI-ready text — paste into ChatGPT, Claude or Gemini
+              </span>
+              <button class="ai-preview-close" (click)="dismissAiText()" title="Dismiss">
+                <span class="material-icons">close</span>
+              </button>
+            </div>
+            <textarea
+              #aiTextarea
+              class="ai-textarea"
+              readonly
+              [value]="displayAiText"
+              (click)="aiTextarea.select()"
+              rows="8">
+            </textarea>
+            <span class="ai-textarea-hint">Click inside to select all, then Ctrl+C / Cmd+C</span>
+          </div>
+
+          <span class="ai-hint" *ngIf="!displayAiText">Paste into ChatGPT, Claude, or Gemini to ask questions about the forecast</span>
         </div>
       </div>
 
@@ -377,7 +400,7 @@ import { ForecastChartComponent } from '../forecast-chart/forecast-chart.compone
       padding: 10px;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 8px;
       flex-shrink: 0;
       border-top: 1px solid var(--border-subtle);
     }
@@ -416,6 +439,67 @@ import { ForecastChartComponent } from '../forecast-chart/forecast-chart.compone
       text-align: center;
       line-height: 1.4;
     }
+    /* AI text preview */
+    .ai-preview {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      animation: fadeIn 0.2s ease;
+    }
+    .ai-preview-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .ai-preview-label {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+    .ai-preview-label .material-icons { font-size: 13px; color: var(--accent-cyan); }
+    .ai-preview-close {
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      color: var(--text-muted);
+      padding: 2px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      transition: color 0.15s;
+    }
+    .ai-preview-close:hover { color: var(--text-primary); }
+    .ai-preview-close .material-icons { font-size: 14px; }
+    .ai-textarea {
+      width: 100%;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-muted);
+      border-radius: var(--radius-sm);
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      line-height: 1.5;
+      padding: 8px;
+      resize: vertical;
+      cursor: text;
+      transition: border-color 0.2s;
+      box-sizing: border-box;
+    }
+    .ai-textarea:focus {
+      outline: none;
+      border-color: var(--accent-blue);
+    }
+    .ai-textarea-hint {
+      font-size: 9px;
+      color: var(--text-muted);
+      text-align: center;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
 
     /* Footer */
     .footer-credit {
@@ -435,16 +519,28 @@ export class StationPanelComponent implements OnChanges {
   @Input() isLoading = false;
   @Input() clickedLat: number | null = null;
   @Input() clickedLon: number | null = null;
-  @Output() aiTextRequested = new EventEmitter<void>();
+  // aiText input kept for backward compat but we now generate locally
+  @Input() aiText = '';
+  @Output() aiTextRequested = new EventEmitter<void>(); // kept for compat
+
+  @ViewChild('aiTextarea') aiTextareaEl?: ElementRef<HTMLTextAreaElement>;
+
+  private weatherService = inject(WeatherService);
+  private ngZone = inject(NgZone);
 
   selectedIndex = 0;
   copied = false;
+  generatedText = '';
+  aiTextDismissed = false;
 
   readonly rankColors = ['#f0c000', '#3fb950', '#58a6ff', '#bc8cff', '#f85149'];
 
   ngOnChanges(): void {
+    // Reset on new location
     this.selectedIndex = 0;
     this.copied = false;
+    this.generatedText = '';
+    this.aiTextDismissed = false;
   }
 
   get selectedForecast(): StationForecast | null {
@@ -454,9 +550,12 @@ export class StationPanelComponent implements OnChanges {
   get currentHour() {
     if (!this.selectedForecast) return null;
     const now = new Date();
-    // Find the last hourly entry <= now (most recent observed/forecast)
     const past = this.selectedForecast.hourly.filter(h => h.datetime <= now);
     return past.length > 0 ? past[past.length - 1] : this.selectedForecast.hourly[0] ?? null;
+  }
+
+  get displayAiText(): string {
+    return this.aiTextDismissed ? '' : (this.generatedText || this.aiText);
   }
 
   selectStation(i: number): void {
@@ -464,8 +563,57 @@ export class StationPanelComponent implements OnChanges {
   }
 
   exportForAi(): void {
-    this.aiTextRequested.emit();
-    this.copied = true;
-    setTimeout(() => this.copied = false, 3000);
+    if (!this.forecasts.length || this.clickedLat === null || this.clickedLon === null) return;
+
+    // Generate the text directly here
+    const text = this.weatherService.generateAiText(
+      this.forecasts, this.clickedLat, this.clickedLon
+    );
+    console.log('[WeatherApp] AI text generated, length:', text.length, 'preview:', text.slice(0, 80));
+    this.generatedText = text;
+    this.aiTextDismissed = false;
+
+    // Wait one tick so Angular renders the textarea, then copy from the visible element
+    setTimeout(() => this.copyGeneratedText(text), 50);
+  }
+
+  private copyGeneratedText(text: string): void {
+    // Primary: Clipboard API (HTTPS / localhost only)
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text)
+        .then(() => this.markCopied())
+        .catch(() => this.execCommandFromVisibleTextarea());
+      return;
+    }
+    // Fallback: use the VISIBLE rendered textarea (definitely focusable)
+    this.execCommandFromVisibleTextarea();
+  }
+
+  private execCommandFromVisibleTextarea(): void {
+    const ta = this.aiTextareaEl?.nativeElement;
+    if (!ta) {
+      // textarea not rendered yet — shouldn't happen after 50ms but handle it
+      console.warn('[WeatherApp] ai-textarea not found in DOM');
+      this.markCopied(); // still show "copied" since text is visible
+      return;
+    }
+    ta.focus();
+    ta.setSelectionRange(0, ta.value.length); // select all
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch {}
+    console.log('[WeatherApp] execCommand copy result:', ok);
+    this.markCopied();
+  }
+
+  private markCopied(): void {
+    this.ngZone.run(() => {
+      this.copied = true;
+      setTimeout(() => this.copied = false, 3000);
+    });
+  }
+
+  dismissAiText(): void {
+    this.aiTextDismissed = true;
   }
 }
+

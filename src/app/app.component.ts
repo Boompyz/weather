@@ -29,6 +29,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
           [isLoading]="isLoading"
           [clickedLat]="clickedLat"
           [clickedLon]="clickedLon"
+          [aiText]="aiText"
           (aiTextRequested)="copyAiText()">
         </app-station-panel>
       </div>
@@ -79,20 +80,20 @@ export class AppComponent {
   isLoading = false;
   clickedLat: number | null = null;
   clickedLon: number | null = null;
+  aiText = '';
 
   private locationSubject = new Subject<{ lat: number; lon: number }>();
 
   constructor() {
-    // Debounce rapid clicks with switchMap (auto-cancels prior request)
     this.locationSubject.pipe(
       tap(() => {
         this.isLoading = true;
         this.forecasts = [];
+        this.aiText = '';
       }),
       switchMap(({ lat, lon }) =>
         this.weatherService.getNearbyStations(lat, lon, 5, 80).pipe(
           tap(stations => {
-            // Show station markers on map immediately
             setTimeout(() => this.mapComp?.showStations(stations), 0);
           }),
           switchMap(stations => this.weatherService.getForecastsForStations(stations))
@@ -120,14 +121,30 @@ export class AppComponent {
   copyAiText(): void {
     if (!this.forecasts.length || this.clickedLat === null || this.clickedLon === null) return;
     const text = this.weatherService.generateAiText(this.forecasts, this.clickedLat, this.clickedLon);
-    navigator.clipboard.writeText(text).catch(err => {
-      // Fallback for older browsers / non-https
-      const textarea = document.createElement('textarea');
-      textarea.value = text;
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-    });
+    this.aiText = text;
+    this.writeToClipboard(text);
+  }
+
+  private writeToClipboard(text: string): void {
+    // navigator.clipboard is only available in secure contexts (HTTPS or localhost).
+    // On plain HTTP (LAN) it is undefined, so we must guard before calling it —
+    // a synchronous undefined.writeText() throw is NOT caught by Promise.catch().
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).catch(() => this.execCommandCopy(text));
+    } else {
+      this.execCommandCopy(text);
+    }
+  }
+
+  private execCommandCopy(text: string): void {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    // Keep it off-screen and invisible so it doesn't cause layout shift
+    ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try { document.execCommand('copy'); } catch { /* best-effort */ }
+    document.body.removeChild(ta);
   }
 }

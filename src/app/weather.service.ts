@@ -180,7 +180,7 @@ export class WeatherService {
 
   /** Parse station CSV → WeatherStation[] */
   private parseStationsCsv(csv: string): WeatherStation[] {
-    const lines = csv.split('\n').filter(l => l.trim());
+    const lines = csv.replace(/\r/g, '').split('\n').filter(l => l.trim());
     if (lines.length < 2) return [];
 
     const header = lines[0].split(';');
@@ -209,7 +209,7 @@ export class WeatherService {
   /** Parse a parameter CSV → Map<pointId, Map<dateStr, value>> */
   private parseParamCsv(csv: string): Map<number, Map<string, number>> {
     const result = new Map<number, Map<string, number>>();
-    const lines = csv.split('\n').filter(l => l.trim());
+    const lines = csv.replace(/\r/g, '').split('\n').filter(l => l.trim());
     if (lines.length < 2) return result;
 
     const header = lines[0].split(';');
