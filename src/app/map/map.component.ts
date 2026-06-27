@@ -1,0 +1,304 @@
+import {
+  Component, AfterViewInit, OnDestroy, Output, EventEmitter, inject, NgZone
+} from '@angular/core';
+import { CommonModule } from '@angular/common';
+import Map from 'ol/Map';
+import View from 'ol/View';
+import TileLayer from 'ol/layer/Tile';
+import VectorLayer from 'ol/layer/Vector';
+import VectorSource from 'ol/source/Vector';
+import Feature from 'ol/Feature';
+import Point from 'ol/geom/Point';
+import { Style, Circle, Fill, Stroke, Icon, Text } from 'ol/style';
+import { XYZ } from 'ol/source';
+import { MapBrowserEvent } from 'ol';
+import { transform } from 'ol/proj';
+import { fromLonLat, toLonLat } from 'ol/proj';
+import proj4 from 'proj4';
+import { register } from 'ol/proj/proj4';
+import { WeatherStation } from '../weather.service';
+import { Coordinate } from 'ol/coordinate';
+
+proj4.defs('EPSG:2056',
+  '+proj=somerc +lat_0=46.95240555555556 +lon_0=7.439583333333333 ' +
+  '+k_0=1 +x_0=2600000 +y_0=1200000 +ellps=bessel ' +
+  '+towgs84=674.374,15.056,405.346,0,0,0,0 +units=m +no_defs'
+);
+register(proj4);
+
+@Component({
+  selector: 'app-map',
+  standalone: true,
+  imports: [CommonModule],
+  template: `
+    <div class="map-wrap">
+      <div id="weather-map" class="map"></div>
+
+      <!-- Map style toggle -->
+      <div class="map-controls">
+        <button class="ctrl-btn" [class.active]="activeLayer === 'colour'"
+                (click)="setLayer('colour')" title="Colour map">🗺️</button>
+        <button class="ctrl-btn" [class.active]="activeLayer === 'satellite'"
+                (click)="setLayer('satellite')" title="Satellite">🛰️</button>
+        <button class="ctrl-btn" [class.active]="activeLayer === 'bw'"
+                (click)="setLayer('bw')" title="Greyscale">⬛</button>
+      </div>
+
+      <!-- Click hint -->
+      <div class="click-hint" [class.hidden]="hasClicked">
+        <span class="material-icons">touch_app</span>
+        Click anywhere on Switzerland to load nearby weather stations
+      </div>
+
+      <!-- Crosshair cursor overlay -->
+      <div class="cursor-info" *ngIf="cursorInfo">{{ cursorInfo }}</div>
+    </div>
+  `,
+  styles: [`
+    .map-wrap {
+      position: relative;
+      width: 100%;
+      height: 100%;
+    }
+    .map {
+      width: 100%;
+      height: 100%;
+      cursor: crosshair;
+      background: #0d1117;
+    }
+    .map-controls {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      z-index: 10;
+    }
+    .ctrl-btn {
+      width: 36px;
+      height: 36px;
+      background: rgba(22,27,34,0.9);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+      color: #e6edf3;
+    }
+    .ctrl-btn:hover {
+      background: rgba(88,166,255,0.15);
+      border-color: rgba(88,166,255,0.5);
+      transform: scale(1.05);
+    }
+    .ctrl-btn.active {
+      background: rgba(88,166,255,0.2);
+      border-color: rgba(88,166,255,0.7);
+      box-shadow: 0 0 12px rgba(88,166,255,0.2);
+    }
+    .click-hint {
+      position: absolute;
+      bottom: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(22,27,34,0.9);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 24px;
+      padding: 8px 18px;
+      font-size: 13px;
+      color: #8b949e;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      pointer-events: none;
+      transition: opacity 0.5s, transform 0.5s;
+      z-index: 10;
+    }
+    .click-hint .material-icons {
+      font-size: 16px;
+      color: #58a6ff;
+      animation: pulse 2s infinite;
+    }
+    .click-hint.hidden {
+      opacity: 0;
+      transform: translateX(-50%) translateY(10px);
+    }
+    .cursor-info {
+      position: absolute;
+      bottom: 8px;
+      right: 8px;
+      background: rgba(13,17,23,0.7);
+      color: #6e7681;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      pointer-events: none;
+      font-family: monospace;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+  `]
+})
+export class MapComponent implements AfterViewInit, OnDestroy {
+  @Output() locationSelected = new EventEmitter<{ lat: number; lon: number }>();
+  @Output() stationsUpdated  = new EventEmitter<WeatherStation[]>();
+
+  private ngZone = inject(NgZone);
+
+  map!: Map;
+  hasClicked = false;
+  cursorInfo: string | null = null;
+  activeLayer: 'colour' | 'bw' | 'satellite' = 'colour';
+
+  private selectedMarkerSource = new VectorSource();
+  private stationMarkerSource  = new VectorSource();
+  private bwLayer!: TileLayer<XYZ>;
+  private colourLayer!: TileLayer<XYZ>;
+  private satelliteLayer!: TileLayer<XYZ>;
+
+  ngAfterViewInit(): void {
+    this.ngZone.runOutsideAngular(() => this.initMap());
+  }
+
+  private tileLoadFn = (tile: any, src: string) => {
+    tile.getImage().src = src.replace(
+      '{z}/{x}/{y}',
+      `${tile.getTileCoord()[0]}/${tile.getTileCoord()[1]}/${tile.getTileCoord()[2]}`
+    );
+  };
+
+  private initMap(): void {
+    this.bwLayer = new TileLayer({
+      source: new XYZ({
+        url: 'https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.pixelkarte-grau/default/current/3857/{z}/{x}/{y}.jpeg',
+        tileLoadFunction: this.tileLoadFn,
+        crossOrigin: 'anonymous'
+      }),
+      visible: false, maxZoom: 20
+    });
+
+    this.colourLayer = new TileLayer({
+      source: new XYZ({
+        url: 'https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.pixelkarte-farbe/default/current/3857/{z}/{x}/{y}.jpeg',
+        tileLoadFunction: this.tileLoadFn,
+        crossOrigin: 'anonymous'
+      }),
+      visible: true, maxZoom: 20
+    });
+
+    this.satelliteLayer = new TileLayer({
+      source: new XYZ({
+        url: 'https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissimage/default/current/3857/{z}/{x}/{y}.jpeg',
+        tileLoadFunction: this.tileLoadFn,
+        crossOrigin: 'anonymous'
+      }),
+      visible: false, maxZoom: 20
+    });
+
+    this.map = new Map({
+      target: 'weather-map',
+      layers: [
+        this.bwLayer,
+        this.colourLayer,
+        this.satelliteLayer,
+        new VectorLayer({ source: this.stationMarkerSource }),
+        new VectorLayer({ source: this.selectedMarkerSource }),
+      ],
+      view: new View({
+        // Centered on Switzerland
+        center: fromLonLat([8.23, 46.82]),
+        zoom: 8,
+        minZoom: 7,
+        maxZoom: 20,
+        extent: fromLonLat([5.0, 44.5]).concat(fromLonLat([11.5, 48.5])) as any
+      })
+    });
+
+    this.map.on('click', (evt: MapBrowserEvent<any>) => {
+      const lonLat = toLonLat(evt.coordinate);
+      this.ngZone.run(() => {
+        this.hasClicked = true;
+        this.placeSelectedMarker(evt.coordinate);
+        this.locationSelected.emit({ lat: lonLat[1], lon: lonLat[0] });
+      });
+    });
+
+    this.map.on('pointermove', (evt: MapBrowserEvent<any>) => {
+      const lonLat = toLonLat(evt.coordinate);
+      this.ngZone.run(() => {
+        this.cursorInfo = `${lonLat[1].toFixed(4)}°N  ${lonLat[0].toFixed(4)}°E`;
+      });
+    });
+  }
+
+  setLayer(layer: 'colour' | 'bw' | 'satellite'): void {
+    this.activeLayer = layer;
+    this.bwLayer.setVisible(layer === 'bw');
+    this.colourLayer.setVisible(layer === 'colour');
+    this.satelliteLayer.setVisible(layer === 'satellite');
+  }
+
+  placeSelectedMarker(coord: Coordinate): void {
+    this.selectedMarkerSource.clear();
+    // Ripple ring
+    const ring = new Feature({ geometry: new Point(coord) });
+    ring.setStyle(new Style({
+      image: new Circle({
+        radius: 18,
+        fill: new Fill({ color: 'rgba(88,166,255,0.12)' }),
+        stroke: new Stroke({ color: 'rgba(88,166,255,0.6)', width: 2 })
+      })
+    }));
+    // Centre dot
+    const dot = new Feature({ geometry: new Point(coord) });
+    dot.setStyle(new Style({
+      image: new Circle({
+        radius: 7,
+        fill: new Fill({ color: '#58a6ff' }),
+        stroke: new Stroke({ color: '#ffffff', width: 2 })
+      })
+    }));
+    this.selectedMarkerSource.addFeature(ring);
+    this.selectedMarkerSource.addFeature(dot);
+  }
+
+  showStations(stations: WeatherStation[]): void {
+    this.stationMarkerSource.clear();
+    stations.forEach((s, i) => {
+      const coord = fromLonLat([s.lon, s.lat]);
+      const feature = new Feature({ geometry: new Point(coord) });
+
+      // Color by distance rank
+      const colors = ['#f0c000', '#3fb950', '#58a6ff', '#bc8cff', '#f85149'];
+      const color = colors[i] ?? '#8b949e';
+
+      feature.setStyle(new Style({
+        image: new Circle({
+          radius: 9,
+          fill: new Fill({ color }),
+          stroke: new Stroke({ color: '#0d1117', width: 2 })
+        }),
+        text: new Text({
+          text: s.station_abbr,
+          offsetY: -18,
+          font: 'bold 11px Inter, sans-serif',
+          fill: new Fill({ color }),
+          stroke: new Stroke({ color: 'rgba(13,17,23,0.9)', width: 3 })
+        })
+      }));
+      this.stationMarkerSource.addFeature(feature);
+    });
+  }
+
+  ngOnDestroy(): void {
+    this.map?.setTarget(undefined);
+  }
+}
