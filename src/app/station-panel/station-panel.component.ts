@@ -125,7 +125,7 @@ import { ForecastChartComponent } from '../forecast-chart/forecast-chart.compone
               readonly
               [value]="displayAiText"
               (click)="aiTextarea.select()"
-              rows="8">
+              rows="4">
             </textarea>
             <span class="ai-textarea-hint">Click inside to select all, then Ctrl+C / Cmd+C</span>
           </div>
@@ -142,6 +142,11 @@ import { ForecastChartComponent } from '../forecast-chart/forecast-chart.compone
     </div>
   `,
   styles: [`
+    :host {
+      display: block;
+      height: 100%;
+      min-height: 0;
+    }
     .panel {
       height: 100%;
       display: flex;
@@ -242,6 +247,7 @@ import { ForecastChartComponent } from '../forecast-chart/forecast-chart.compone
     /* ── Scrollable stations list ─────────────── */
     .stations-scroll {
       flex: 1;
+      min-height: 0;
       overflow: hidden;
       padding: 10px;
       display: flex;
@@ -254,6 +260,7 @@ import { ForecastChartComponent } from '../forecast-chart/forecast-chart.compone
       overflow-x: auto;
       overflow-y: auto;
       flex: 1;
+      min-height: 0;
       width: 100%;
       border: 1px solid var(--border-subtle);
       border-radius: var(--radius-md);
@@ -377,7 +384,8 @@ import { ForecastChartComponent } from '../forecast-chart/forecast-chart.compone
       flex-direction: column;
       gap: 8px;
       border-top: 1px solid var(--border-subtle);
-      margin-top: 4px;
+      margin-top: auto;
+      flex-shrink: 0;
     }
     .ai-export-header {
       display: flex;
@@ -470,6 +478,7 @@ import { ForecastChartComponent } from '../forecast-chart/forecast-chart.compone
     .ai-preview-close .material-icons { font-size: 14px; }
     .ai-textarea {
       width: 100%;
+      max-height: 90px;
       background: var(--bg-primary);
       border: 1px solid var(--border-muted);
       border-radius: var(--radius-sm);

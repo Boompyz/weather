@@ -519,6 +519,7 @@ export class ForecastChartComponent implements OnChanges, OnDestroy {
   private chartContentEl: HTMLElement | null = null;
 
   @ViewChild('chartContent') set chartContent(element: ElementRef<HTMLElement> | undefined) {
+    console.log('[ForecastChart] chartContent setter called with:', element);
     if (this.chartContentEl) {
       this.cleanupHoverListeners(this.chartContentEl);
       this.chartContentEl = null;
@@ -836,6 +837,7 @@ export class ForecastChartComponent implements OnChanges, OnDestroy {
 
   // ── Hover interaction (running outside Angular Zone for 60fps performance) ──
   private setupHoverListeners(el: HTMLElement): void {
+    console.log('[ForecastChart] setupHoverListeners for:', el);
     this.ngZone.runOutsideAngular(() => {
       el.addEventListener('mousemove', this.handleMouseMove, { passive: true });
       el.addEventListener('mouseleave', this.handleMouseLeave, { passive: true });
@@ -843,6 +845,7 @@ export class ForecastChartComponent implements OnChanges, OnDestroy {
   }
 
   private cleanupHoverListeners(el: HTMLElement): void {
+    console.log('[ForecastChart] cleanupHoverListeners for:', el);
     el.removeEventListener('mousemove', this.handleMouseMove);
     el.removeEventListener('mouseleave', this.handleMouseLeave);
   }
@@ -859,7 +862,9 @@ export class ForecastChartComponent implements OnChanges, OnDestroy {
     const x = event.clientX - rect.left;
     const index = Math.max(0, Math.min(this.hours.length - 1, Math.floor(x / COL_W)));
     
+    console.log('[ForecastChart] handleMouseMove index:', index, 'current hovered:', this.hoveredHourIndex);
     if (index !== this.hoveredHourIndex) {
+      console.log('[ForecastChart] Emit hover index:', index);
       this.ngZone.run(() => {
         this.hoverChanged.emit(index);
       });
@@ -867,6 +872,7 @@ export class ForecastChartComponent implements OnChanges, OnDestroy {
   };
 
   private handleMouseLeave = (): void => {
+    console.log('[ForecastChart] handleMouseLeave');
     if (this.hoveredHourIndex !== null) {
       this.ngZone.run(() => {
         this.hoverChanged.emit(null);
