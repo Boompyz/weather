@@ -1,6 +1,15 @@
-import { Component, Input, OnChanges, SimpleChanges, ElementRef, ViewChild, AfterViewInit, inject, NgZone } from '@angular/core';
+import { Component, Input, OnChanges, SimpleChanges } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { StationForecast, HourlyForecast, DailyForecast } from '../weather.service';
+
+/** Column width per hour in px */
+const COL_W = 32;
+/** Left margin for Y-axis labels */
+const LABEL_W = 60;
+/** Height of the main temp+precip chart area */
+const CHART_H = 100;
+/** Max sunshine bar height */
+const SUNSHINE_H = 40;
 
 @Component({
   selector: 'app-forecast-chart',
@@ -8,96 +17,108 @@ import { StationForecast, HourlyForecast, DailyForecast } from '../weather.servi
   imports: [CommonModule],
   template: `
     <div class="chart-wrap">
-      <!-- Tab bar -->
-      <div class="tab-bar">
-        <button class="tab" [class.active]="activeTab === 'hourly'" (click)="activeTab='hourly'">
-          <span class="material-icons">schedule</span> Hourly
-        </button>
-        <button class="tab" [class.active]="activeTab === 'daily'" (click)="activeTab='daily'">
-          <span class="material-icons">calendar_today</span> 8-Day
-        </button>
-      </div>
-
-      <!-- Hourly view -->
+      <!-- ──────────── HOURLY VIEW ──────────── -->
       <div class="chart-area" *ngIf="activeTab === 'hourly'">
-        <div class="scroll-hint" *ngIf="(forecast?.hourly?.length ?? 0) > 0">→ scroll</div>
-        <div class="chart-scroll">
-          <div class="hourly-grid" *ngIf="(forecast?.hourly?.length ?? 0) > 0">
-            <!-- Temperature bar chart -->
-            <div class="param-row temp-row">
-              <div class="param-label">
-                <span class="material-icons">thermostat</span>
-                <span>Temp (°C)</span>
-              </div>
-              <div class="bar-track">
-                <ng-container *ngFor="let h of displayHourly">
-                  <div class="bar-col">
-                    <span class="bar-value" *ngIf="h.temperature !== undefined">{{ h.temperature | number:'1.0-0' }}</span>
-                    <div class="temp-bar"
-                         [style.height.px]="getTempBarHeight(h.temperature)"
-                         [style.background]="getTempColor(h.temperature)"></div>
-                  </div>
-                </ng-container>
+        <div class="no-data" *ngIf="hours.length === 0">No hourly data available</div>
+
+        <div class="meteo-scroll" *ngIf="hours.length > 0">
+          <!-- All rows are inside this single scroll container -->
+          <div class="meteo-canvas" [style.width.px]="canvasWidth">
+
+            <!-- 1 ─ Weather icons row -->
+            <div class="row row-icons">
+              <div class="y-label"></div>
+              <div class="row-content">
+                <div class="icon-cell" *ngFor="let h of hours">
+                  {{ getWeatherEmoji(h.weatherIcon) }}
+                </div>
               </div>
             </div>
 
-            <!-- Precipitation row -->
-            <div class="param-row precip-row">
-              <div class="param-label">
-                <span class="material-icons">water_drop</span>
-                <span>Precip (mm)</span>
-              </div>
-              <div class="bar-track">
-                <ng-container *ngFor="let h of displayHourly">
-                  <div class="bar-col">
-                    <span class="bar-value small" *ngIf="h.precipitation && h.precipitation > 0">{{ h.precipitation | number:'1.0-1' }}</span>
-                    <div class="precip-bar"
-                         [style.height.px]="getPrecipBarHeight(h.precipitation)"
-                         [style.opacity]="getPrecipOpacity(h.precipitation)"></div>
-                  </div>
-                </ng-container>
+            <!-- 2 ─ Wind row -->
+            <div class="row row-wind">
+              <div class="y-label">Wind km/h</div>
+              <div class="row-content">
+                <div class="wind-cell" *ngFor="let h of hours">
+                  <span class="wind-val" *ngIf="h.windSpeed !== undefined">{{ h.windSpeed | number:'1.0-0' }}</span>
+                </div>
               </div>
             </div>
 
-            <!-- Wind row -->
-            <div class="param-row wind-row">
-              <div class="param-label">
-                <span class="material-icons">air</span>
-                <span>Wind (km/h)</span>
-              </div>
-              <div class="bar-track">
-                <ng-container *ngFor="let h of displayHourly">
-                  <div class="bar-col">
-                    <span class="bar-value small" *ngIf="h.windSpeed !== undefined">{{ h.windSpeed | number:'1.0-0' }}</span>
-                    <div class="wind-bar"
-                         [style.height.px]="getWindBarHeight(h.windSpeed)"
-                         [class.gust-high]="(h.windGust ?? 0) > 60"></div>
-                  </div>
-                </ng-container>
+            <!-- 3 ─ Sunshine bar chart -->
+            <div class="row row-sunshine">
+              <div class="y-label">Sunshine<br>min/h</div>
+              <div class="row-content" style="align-items: flex-end;">
+                <div class="sunshine-col" *ngFor="let h of hours">
+                  <div class="sunshine-bar"
+                       [style.height.px]="getSunshineHeight(h.sunshine)"></div>
+                </div>
               </div>
             </div>
 
-            <!-- Time axis -->
-            <div class="time-axis">
-              <div class="param-label" style="opacity:0">·</div>
-              <div class="bar-track time-track">
-                <ng-container *ngFor="let h of displayHourly">
-                  <div class="time-col" [class.day-start]="isDayStart(h)">
-                    <span class="time-hour">{{ getHourLabel(h) }}</span>
-                    <span class="time-day" *ngIf="isDayStart(h)">{{ getDayLabel(h) }}</span>
-                  </div>
-                </ng-container>
+            <!-- 4 ─ Temperature line + Precipitation bars (SVG) -->
+            <div class="row row-chart">
+              <div class="y-label y-label-dual">
+                <span class="y-temp-label">°C</span>
+                <div class="y-ticks">
+                  <span *ngFor="let t of tempTicks" class="y-tick"
+                        [style.bottom.px]="tempToY(t)">{{ t }}</span>
+                </div>
+              </div>
+              <div class="row-content chart-content">
+                <!-- Gridlines -->
+                <svg class="chart-grid" [attr.viewBox]="'0 0 ' + svgW + ' ' + CHART_H"
+                     [attr.width]="svgW" [attr.height]="CHART_H" preserveAspectRatio="none">
+                  <line *ngFor="let t of tempTicks"
+                        [attr.x1]="0" [attr.y1]="CHART_H - tempToY(t)"
+                        [attr.x2]="svgW" [attr.y2]="CHART_H - tempToY(t)"
+                        class="grid-line"/>
+                  <line *ngFor="let x of daySepXPositions"
+                        [attr.x1]="x" [attr.y1]="0"
+                        [attr.x2]="x" [attr.y2]="CHART_H"
+                        class="day-sep-line"/>
+                </svg>
+
+                <!-- Precipitation bars -->
+                <svg class="chart-precip" [attr.viewBox]="'0 0 ' + svgW + ' ' + CHART_H"
+                     [attr.width]="svgW" [attr.height]="CHART_H" preserveAspectRatio="none">
+                  <rect *ngFor="let bar of precipBars"
+                        [attr.x]="bar.x" [attr.y]="bar.y"
+                        [attr.width]="bar.w" [attr.height]="bar.h"
+                        class="precip-bar"/>
+                </svg>
+
+                <!-- Temperature confidence band + line -->
+                <svg class="chart-temp" [attr.viewBox]="'0 0 ' + svgW + ' ' + CHART_H"
+                     [attr.width]="svgW" [attr.height]="CHART_H" preserveAspectRatio="none">
+                  <path *ngIf="tempBandPath" [attr.d]="tempBandPath" class="temp-band"/>
+                  <path *ngIf="tempLinePath" [attr.d]="tempLinePath" class="temp-line"/>
+                  <circle *ngFor="let pt of tempPoints"
+                          [attr.cx]="pt.x" [attr.cy]="pt.y" r="2.5"
+                          class="temp-dot"/>
+                </svg>
+
+                <div class="y-right-label">mm/h</div>
               </div>
             </div>
-          </div>
 
-          <div class="no-data" *ngIf="(forecast?.hourly?.length ?? 0) === 0">
-            No hourly data available
+            <!-- 5 ─ Time axis -->
+            <div class="row row-time">
+              <div class="y-label"></div>
+              <div class="row-content">
+                <div class="time-cell" *ngFor="let h of hours; let i = index"
+                     [class.day-start]="isDayBoundary(i)">
+                  <span class="time-hour" *ngIf="showHourLabel(h)">{{ formatHour(h) }}</span>
+                  <span class="time-day" *ngIf="isDayBoundary(i)">{{ formatDayLabel(h) }}</span>
+                </div>
+              </div>
+            </div>
+
           </div>
         </div>
       </div>
 
-      <!-- Daily 8-day view -->
+      <!-- ──────────── DAILY 8-DAY VIEW ──────────── -->
       <div class="chart-area" *ngIf="activeTab === 'daily'">
         <div class="daily-grid" *ngIf="(forecast?.daily?.length ?? 0) > 0">
           <ng-container *ngFor="let d of displayDaily">
@@ -126,12 +147,13 @@ import { StationForecast, HourlyForecast, DailyForecast } from '../weather.servi
     </div>
   `,
   styles: [`
+    /* ── Base / wrap ─────────────────────────────────── */
     .chart-wrap {
-      background: var(--bg-tertiary);
-      border-radius: var(--radius-md);
-      overflow: hidden;
-      border: 1px solid var(--border-subtle);
+      background: transparent;
+      overflow: visible;
     }
+
+    /* ── Tabs ────────────────────────────────────────── */
     .tab-bar {
       display: flex;
       border-bottom: 1px solid var(--border-subtle);
@@ -163,105 +185,216 @@ import { StationForecast, HourlyForecast, DailyForecast } from '../weather.servi
     }
     .chart-area { position: relative; }
 
-    /* ── Hourly chart ─────────────────────────── */
-    .scroll-hint {
-      position: absolute;
-      right: 8px;
-      top: 6px;
-      font-size: 10px;
-      color: var(--text-muted);
-      pointer-events: none;
-      z-index: 2;
+    /* ── MeteoSwiss scroll container ─────────────────── */
+    .meteo-scroll {
+      /* No overflow here — parent panel controls horizontal scroll */
+      padding: 4px 0 0 0;
     }
-    .chart-scroll {
-      overflow-x: auto;
-      padding: 8px 8px 0;
-    }
-    .hourly-grid {
+    .meteo-canvas {
       display: flex;
       flex-direction: column;
-      gap: 4px;
       min-width: max-content;
     }
-    .param-row {
+
+    /* ── Generic row ────────────────────────────────── */
+    .row {
       display: flex;
-      align-items: flex-end;
-      gap: 0;
+      align-items: stretch;
     }
-    .param-label {
-      width: 90px;
+    .y-label {
+      width: 60px;
       flex-shrink: 0;
       display: flex;
       align-items: center;
-      gap: 4px;
-      font-size: 10px;
+      justify-content: flex-end;
+      padding-right: 6px;
+      font-size: 9px;
       color: var(--text-muted);
-      padding-bottom: 4px;
+      font-family: var(--font-mono);
+      line-height: 1.2;
+      text-align: right;
+      white-space: nowrap;
+      position: sticky;
+      left: 200px;
+      background: var(--bg-secondary);
+      z-index: 8;
+      box-shadow: 1px 0 0 var(--border-subtle);
     }
-    .param-label .material-icons { font-size: 13px; }
-    .bar-track {
+    .row-content {
+      display: flex;
+      flex: 1;
+      min-width: 0;
+    }
+
+    /* ── 1. Icons row ───────────────────────────────── */
+    .row-icons {
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .icon-cell {
+      width: 32px;
+      flex-shrink: 0;
+      text-align: center;
+      font-size: 14px;
+      line-height: 26px;
+      height: 26px;
+    }
+
+    /* ── 2. Wind row ────────────────────────────────── */
+    .row-wind {
+      border-bottom: 1px solid var(--border-subtle);
+      height: 24px;
+    }
+    .wind-cell {
+      width: 32px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .wind-val {
+      font-size: 9px;
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+    }
+
+    /* ── 3. Sunshine row ────────────────────────────── */
+    .row-sunshine {
+      height: 40px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .sunshine-col {
+      width: 32px;
+      flex-shrink: 0;
       display: flex;
       align-items: flex-end;
-      gap: 3px;
-      padding-bottom: 4px;
+      justify-content: center;
+      height: 100%;
     }
-    .bar-col {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      width: 28px;
-      gap: 2px;
-    }
-    .bar-value {
-      font-size: 10px;
-      color: var(--text-primary);
-      font-weight: 600;
-      line-height: 1;
-    }
-    .bar-value.small { font-size: 9px; color: var(--text-secondary); }
-    .temp-bar {
-      width: 20px;
-      border-radius: 4px 4px 0 0;
-      min-height: 2px;
+    .sunshine-bar {
+      width: 18px;
+      background: #c8a415;
+      border-radius: 3px 3px 0 0;
+      min-height: 0;
       transition: height 0.3s;
+    }
+
+    /* ── 4. Temp + Precip chart ──────────────────────── */
+    .row-chart {
+      height: 100px;
+      border-bottom: 1px solid var(--border-subtle);
+      position: relative;
+    }
+    .y-label-dual {
+      flex-direction: column;
+      align-items: flex-end;
+      justify-content: flex-start;
+    }
+    .y-temp-label {
+      font-size: 10px;
+      color: #e05555;
+      font-weight: 600;
+      margin-top: 4px;
+      align-self: flex-start;
+      padding-left: 10px;
+    }
+    .y-ticks {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      right: 6px;
+      width: 30px;
+    }
+    .y-tick {
+      position: absolute;
+      right: 0;
+      font-size: 8px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      transform: translateY(50%);
+    }
+    .chart-content {
+      position: relative;
+      height: 100px;
+      flex: 1;
+    }
+    .chart-grid, .chart-precip, .chart-temp {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+    .grid-line {
+      stroke: var(--border-subtle);
+      stroke-width: 1;
+      stroke-dasharray: 4 3;
+    }
+    .day-sep-line {
+      stroke: var(--border-subtle);
+      stroke-width: 1;
     }
     .precip-bar {
-      width: 20px;
-      background: #39d0f5;
-      border-radius: 4px 4px 0 0;
-      min-height: 0;
-      transition: height 0.3s;
+      fill: #58a6ff;
+      opacity: 0.55;
     }
-    .wind-bar {
-      width: 20px;
-      background: #58a6ff;
-      border-radius: 4px 4px 0 0;
-      min-height: 0;
+    .temp-band {
+      fill: rgba(224, 85, 85, 0.12);
     }
-    .wind-bar.gust-high { background: #f8884b; }
-    .time-axis { border-top: 1px solid var(--border-subtle); margin-top: 2px; }
-    .time-track { align-items: flex-start; padding-top: 3px; padding-bottom: 4px; }
-    .time-col {
-      width: 28px;
+    .temp-line {
+      fill: none;
+      stroke: #e05555;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .temp-dot {
+      fill: #e05555;
+    }
+    .y-right-label {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      font-size: 10px;
+      color: #58a6ff;
+      font-weight: 600;
+      font-family: var(--font-mono);
+    }
+
+    /* ── 5. Time axis ────────────────────────────────── */
+    .row-time {
+      min-height: 36px;
+    }
+    .time-cell {
+      width: 32px;
+      flex-shrink: 0;
       display: flex;
       flex-direction: column;
       align-items: center;
+      justify-content: flex-start;
+      padding-top: 3px;
       gap: 1px;
+      position: relative;
     }
-    .time-col.day-start { border-left: 1px solid var(--border-muted); }
+    .time-cell.day-start::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: -2px;
+      bottom: -2px;
+      width: 1px;
+      background: var(--text-muted);
+    }
     .time-hour {
       font-size: 9px;
       color: var(--text-muted);
       font-family: var(--font-mono);
     }
     .time-day {
-      font-size: 9px;
+      font-size: 8px;
       color: var(--accent-blue);
       font-weight: 600;
       white-space: nowrap;
     }
 
-    /* ── Daily grid ───────────────────────────── */
+    /* ── Daily grid ──────────────────────────────────── */
     .daily-grid {
       display: flex;
       gap: 6px;
@@ -322,14 +455,273 @@ export class ForecastChartComponent implements OnChanges {
 
   activeTab: 'hourly' | 'daily' = 'hourly';
 
-  get displayHourly(): HourlyForecast[] {
-    if (!this.forecast) return [];
-    const now = new Date();
-    return this.forecast.hourly
-      .filter(h => h.datetime >= now)
-      .slice(0, 72);
+  readonly CHART_H = CHART_H;
+
+  // ── Computed data ──────────────────────────────────────────
+  hours: HourlyForecast[] = [];
+  svgW = 0;
+  canvasWidth = 0;
+
+  // Temperature
+  tempPoints: { x: number; y: number }[] = [];
+  tempLinePath = '';
+  tempBandPath = '';
+  tempTicks: number[] = [];
+  private tempMin = 0;
+  private tempMax = 30;
+
+  // Precipitation
+  precipBars: { x: number; y: number; w: number; h: number }[] = [];
+  private precipMax = 1;
+
+  // Day separators
+  daySepXPositions: number[] = [];
+
+  ngOnChanges(changes: SimpleChanges): void {
+    if (changes['forecast']) {
+      this.activeTab = 'hourly';
+      this.recalculate();
+    }
   }
 
+  private recalculate(): void {
+    if (!this.forecast) {
+      this.hours = [];
+      return;
+    }
+
+    const now = new Date();
+    this.hours = this.forecast.hourly
+      .filter(h => h.datetime >= now)
+      .slice(0, 72);
+
+    const n = this.hours.length;
+    this.svgW = n * COL_W;
+    this.canvasWidth = LABEL_W + this.svgW + 30; // 30px for right label space
+
+    this.calcTempData();
+    this.calcPrecipData();
+    this.calcDaySeps();
+  }
+
+  // ── Temperature ────────────────────────────────────────────
+  private calcTempData(): void {
+    const temps = this.hours
+      .map(h => h.temperature)
+      .filter((t): t is number => t !== undefined);
+
+    if (temps.length === 0) {
+      this.tempMin = 0;
+      this.tempMax = 30;
+    } else {
+      const rawMin = Math.min(...temps);
+      const rawMax = Math.max(...temps);
+      const padding = Math.max(2, (rawMax - rawMin) * 0.15);
+      this.tempMin = Math.floor(rawMin - padding);
+      this.tempMax = Math.ceil(rawMax + padding);
+    }
+
+    // Generate nice tick values
+    const range = this.tempMax - this.tempMin;
+    let step = 5;
+    if (range <= 10) step = 2;
+    else if (range <= 20) step = 5;
+    else step = 10;
+
+    this.tempTicks = [];
+    const startTick = Math.ceil(this.tempMin / step) * step;
+    for (let v = startTick; v <= this.tempMax; v += step) {
+      this.tempTicks.push(v);
+    }
+
+    // Build points
+    this.tempPoints = [];
+    for (let i = 0; i < this.hours.length; i++) {
+      const t = this.hours[i].temperature;
+      if (t === undefined) continue;
+      const x = i * COL_W + COL_W / 2;
+      const y = CHART_H - this.tempToY(t);
+      this.tempPoints.push({ x, y });
+    }
+
+    // Build smooth bezier path
+    if (this.tempPoints.length >= 2) {
+      this.tempLinePath = this.monotoneCubicPath(this.tempPoints);
+      this.tempBandPath = this.buildBandPath(this.tempPoints, 8);
+    } else if (this.tempPoints.length === 1) {
+      this.tempLinePath = '';
+      this.tempBandPath = '';
+    } else {
+      this.tempLinePath = '';
+      this.tempBandPath = '';
+    }
+  }
+
+  /** Convert a temperature value to a Y offset from bottom in px */
+  tempToY(temp: number): number {
+    const range = this.tempMax - this.tempMin || 1;
+    const margin = 10; // top/bottom margin in px
+    return margin + ((temp - this.tempMin) / range) * (CHART_H - 2 * margin);
+  }
+
+  // ── Precipitation ──────────────────────────────────────────
+  private calcPrecipData(): void {
+    const vals = this.hours
+      .map(h => h.precipitation)
+      .filter((v): v is number => v !== undefined && v > 0);
+    this.precipMax = Math.max(1, ...vals);
+
+    this.precipBars = [];
+    for (let i = 0; i < this.hours.length; i++) {
+      const p = this.hours[i].precipitation;
+      if (!p || p <= 0) continue;
+      const barH = Math.max(2, (p / this.precipMax) * (CHART_H * 0.6));
+      const barW = COL_W * 0.5;
+      this.precipBars.push({
+        x: i * COL_W + (COL_W - barW) / 2,
+        y: CHART_H - barH,
+        w: barW,
+        h: barH,
+      });
+    }
+  }
+
+  // ── Day separators ─────────────────────────────────────────
+  private calcDaySeps(): void {
+    this.daySepXPositions = [];
+    for (let i = 0; i < this.hours.length; i++) {
+      if (this.isDayBoundary(i)) {
+        this.daySepXPositions.push(i * COL_W);
+      }
+    }
+  }
+
+  // ── Sunshine ──────────────────────────────────────────────
+  getSunshineHeight(sunshine?: number): number {
+    if (!sunshine || sunshine <= 0) return 0;
+    return Math.max(2, (Math.min(sunshine, 60) / 60) * SUNSHINE_H);
+  }
+
+  // ── Monotone cubic bezier interpolation ────────────────────
+  /**
+   * Attempt a Fritsch–Carlson monotone cubic spline.
+   * Falls back to simpler Catmull-Rom–like control points.
+   */
+  private monotoneCubicPath(pts: { x: number; y: number }[]): string {
+    const n = pts.length;
+    if (n < 2) return '';
+    if (n === 2) {
+      return `M${pts[0].x},${pts[0].y}L${pts[1].x},${pts[1].y}`;
+    }
+
+    // 1) compute finite differences (deltas) and slopes (tangents)
+    const dx: number[] = [];
+    const dy: number[] = [];
+    const m: number[] = []; // tangent at each point
+
+    for (let i = 0; i < n - 1; i++) {
+      dx.push(pts[i + 1].x - pts[i].x);
+      dy.push(pts[i + 1].y - pts[i].y);
+    }
+
+    // slopes of segments
+    const slopes: number[] = dx.map((d, i) => (d === 0 ? 0 : dy[i] / d));
+
+    // tangents – three-point formula with Fritsch-Carlson adjustments
+    m.push(slopes[0]);
+    for (let i = 1; i < n - 1; i++) {
+      if (slopes[i - 1] * slopes[i] <= 0) {
+        m.push(0);
+      } else {
+        m.push((slopes[i - 1] + slopes[i]) / 2);
+      }
+    }
+    m.push(slopes[n - 2]);
+
+    // Fritsch-Carlson: ensure monotonicity
+    for (let i = 0; i < n - 1; i++) {
+      if (slopes[i] === 0) {
+        m[i] = 0;
+        m[i + 1] = 0;
+      } else {
+        const alpha = m[i] / slopes[i];
+        const beta = m[i + 1] / slopes[i];
+        const s = alpha * alpha + beta * beta;
+        if (s > 9) {
+          const t = 3 / Math.sqrt(s);
+          m[i] = t * alpha * slopes[i];
+          m[i + 1] = t * beta * slopes[i];
+        }
+      }
+    }
+
+    // 2) Build cubic bezier path
+    let d = `M${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)}`;
+    for (let i = 0; i < n - 1; i++) {
+      const seg = dx[i] / 3;
+      const cp1x = pts[i].x + seg;
+      const cp1y = pts[i].y + m[i] * seg;
+      const cp2x = pts[i + 1].x - seg;
+      const cp2y = pts[i + 1].y - m[i + 1] * seg;
+      d += `C${cp1x.toFixed(1)},${cp1y.toFixed(1)},${cp2x.toFixed(1)},${cp2y.toFixed(1)},${pts[i + 1].x.toFixed(1)},${pts[i + 1].y.toFixed(1)}`;
+    }
+
+    return d;
+  }
+
+  /** Build a filled band path ±offset pixels around the temp points */
+  private buildBandPath(pts: { x: number; y: number }[], offset: number): string {
+    if (pts.length < 2) return '';
+
+    const upper = pts.map(p => ({ x: p.x, y: Math.max(0, p.y - offset) }));
+    const lower = pts.map(p => ({ x: p.x, y: Math.min(CHART_H, p.y + offset) }));
+
+    const topPath = this.monotoneCubicPath(upper);
+    // Build a reversed lower path (line segments for simplicity to close the area)
+    let bottomReverse = '';
+    for (let i = lower.length - 1; i >= 0; i--) {
+      bottomReverse += `L${lower[i].x.toFixed(1)},${lower[i].y.toFixed(1)}`;
+    }
+    return topPath + bottomReverse + 'Z';
+  }
+
+  // ── Time axis helpers ─────────────────────────────────────
+  isDayBoundary(index: number): boolean {
+    if (index === 0) return false;
+    const prev = this.hours[index - 1];
+    const curr = this.hours[index];
+    const prevDay = new Date(prev.datetime).toLocaleDateString('en-CH', { timeZone: 'Europe/Zurich' });
+    const currDay = new Date(curr.datetime).toLocaleDateString('en-CH', { timeZone: 'Europe/Zurich' });
+    return prevDay !== currDay;
+  }
+
+  showHourLabel(h: HourlyForecast): boolean {
+    const hour = this.getLocalHour(h);
+    return hour % 3 === 0;
+  }
+
+  formatHour(h: HourlyForecast): string {
+    const hour = this.getLocalHour(h);
+    return hour.toString().padStart(2, '0');
+  }
+
+  formatDayLabel(h: HourlyForecast): string {
+    return h.datetime.toLocaleString('en-CH', {
+      timeZone: 'Europe/Zurich',
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short'
+    });
+  }
+
+  private getLocalHour(h: HourlyForecast): number {
+    return parseInt(
+      h.datetime.toLocaleString('en-CH', { timeZone: 'Europe/Zurich', hour: '2-digit', hour12: false }),
+      10
+    );
+  }
+
+  // ── Daily helpers ──────────────────────────────────────────
   get displayDaily(): DailyForecast[] {
     if (!this.forecast) return [];
     const now = new Date();
@@ -339,81 +731,6 @@ export class ForecastChartComponent implements OnChanges {
       .slice(0, 8);
   }
 
-  ngOnChanges(changes: SimpleChanges): void {
-    if (changes['forecast']) {
-      this.activeTab = 'hourly';
-    }
-  }
-
-  // ── Temperature bars ──
-  private get tempRange(): { min: number; max: number } {
-    const temps = this.displayHourly.map(h => h.temperature).filter(t => t !== undefined) as number[];
-    if (!temps.length) return { min: 0, max: 30 };
-    return { min: Math.min(...temps), max: Math.max(...temps) };
-  }
-
-  getTempBarHeight(temp?: number): number {
-    if (temp === undefined) return 0;
-    const { min, max } = this.tempRange;
-    const range = Math.max(max - min, 1);
-    return Math.max(4, ((temp - min) / range) * 60 + 4);
-  }
-
-  getTempColor(temp?: number): string {
-    if (temp === undefined) return '#8b949e';
-    if (temp <= 0)  return '#39d0f5';
-    if (temp <= 10) return '#4c8ef7';
-    if (temp <= 20) return '#3fb950';
-    if (temp <= 28) return '#f0c000';
-    return '#f85149';
-  }
-
-  // ── Precipitation bars ──
-  private get maxPrecip(): number {
-    const vals = this.displayHourly.map(h => h.precipitation).filter(v => v !== undefined) as number[];
-    return Math.max(1, ...vals);
-  }
-
-  getPrecipBarHeight(precip?: number): number {
-    if (!precip) return 0;
-    return Math.max(2, (precip / this.maxPrecip) * 48);
-  }
-
-  getPrecipOpacity(precip?: number): number {
-    if (!precip) return 0;
-    return Math.min(1, 0.3 + (precip / this.maxPrecip) * 0.7);
-  }
-
-  // ── Wind bars ──
-  private get maxWind(): number {
-    const vals = this.displayHourly.map(h => h.windSpeed).filter(v => v !== undefined) as number[];
-    return Math.max(10, ...vals);
-  }
-
-  getWindBarHeight(speed?: number): number {
-    if (!speed) return 2;
-    return Math.max(2, (speed / this.maxWind) * 48);
-  }
-
-  // ── Time axis ──
-  isDayStart(h: HourlyForecast): boolean {
-    return h.datetime.getUTCHours() === 0;
-  }
-
-  getHourLabel(h: HourlyForecast): string {
-    const localHour = new Date(h.datetime.getTime()).toLocaleString('de-CH', {
-      timeZone: 'Europe/Zurich', hour: '2-digit', hour12: false
-    });
-    return localHour;
-  }
-
-  getDayLabel(h: HourlyForecast): string {
-    return h.datetime.toLocaleString('en-CH', {
-      timeZone: 'Europe/Zurich', weekday: 'short'
-    });
-  }
-
-  // ── Daily helpers ──
   isToday(date: Date): boolean {
     const now = new Date();
     return date.getUTCFullYear() === now.getFullYear() &&
@@ -426,7 +743,7 @@ export class ForecastChartComponent implements OnChanges {
     return date.toLocaleString('en-CH', { timeZone: 'Europe/Zurich', weekday: 'short' });
   }
 
-  // MeteoSwiss weather icon code → emoji
+  // ── MeteoSwiss weather icon code → emoji ──────────────────
   getWeatherEmoji(code?: number): string {
     if (!code) return '🌡️';
     if (code <= 2)  return '☀️';

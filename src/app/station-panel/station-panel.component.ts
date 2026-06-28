@@ -1,6 +1,6 @@
-import { Component, Input, Output, EventEmitter, OnChanges, ViewChild, ElementRef, inject, NgZone } from '@angular/core';
+import { Component, Input, OnChanges, ViewChild, ElementRef, inject, NgZone } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { StationForecast, WeatherStation, WeatherService } from '../weather.service';
+import { StationForecast, WeatherStation, WeatherService, HourlyForecast } from '../weather.service';
 import { ForecastChartComponent } from '../forecast-chart/forecast-chart.component';
 
 @Component({
@@ -47,81 +47,64 @@ import { ForecastChartComponent } from '../forecast-chart/forecast-chart.compone
         <p>No weather stations found within 80 km of this location. Try clicking somewhere else.</p>
       </div>
 
-      <!-- Station tabs + content -->
-      <div class="stations-content" *ngIf="!isLoading && forecasts.length > 0">
-        <!-- Station selector -->
-        <div class="station-tabs">
-          <button
-            *ngFor="let fc of forecasts; let i = index"
-            class="station-tab"
-            [class.active]="selectedIndex === i"
-            (click)="selectStation(i)">
-            <div class="station-rank" [style.background]="rankColors[i]">{{ i + 1 }}</div>
-            <div class="station-info">
-              <span class="station-abbr">{{ fc.station.station_abbr }}</span>
-              <span class="station-dist">{{ fc.station.distanceKm | number:'1.0-1' }} km</span>
-            </div>
-          </button>
-        </div>
+      <!-- All stations list with individual charts -->
+      <div class="stations-scroll" *ngIf="!isLoading && forecasts.length > 0">
+        <div class="horizontal-scroll-container">
+          <div class="stations-grid-layout">
+            <div class="station-row" *ngFor="let fc of forecasts; let i = index">
+              <!-- Sticky Left Station Header -->
+              <div class="station-sticky-header">
+                <div class="station-card-compact">
+                  <div class="station-rank-name-row">
+                    <div class="station-rank" [style.background]="rankColors[i]">{{ i + 1 }}</div>
+                    <div class="station-name-wrap">
+                      <span class="station-name" [title]="fc.station.point_name">{{ fc.station.point_name }}</span>
+                      <span class="station-abbr">{{ fc.station.station_abbr }}</span>
+                    </div>
+                  </div>
+                  <div class="station-meta-row">
+                    <span class="detail-item"><span class="material-icons">height</span>{{ fc.station.point_height_masl | number:'1.0-0' }}m</span>
+                    <span class="sep">|</span>
+                    <span class="detail-item"><span class="material-icons">place</span>{{ fc.station.distanceKm | number:'1.1-1' }}km</span>
+                  </div>
+                  <div class="station-conditions-row" *ngIf="getCurrentHour(fc) as cur">
+                    <span class="cond-val">🌡️ {{ cur.temperature | number:'1.0-0' }}°C</span>
+                    <span class="cond-val">💨 {{ cur.windSpeed | number:'1.0-0' }}k/h</span>
+                  </div>
+                </div>
+              </div>
 
-        <!-- Selected station details -->
-        <div class="station-detail" *ngIf="selectedForecast">
-          <div class="station-header">
-            <div class="station-badge" [style.border-color]="rankColors[selectedIndex]">
-              <span class="badge-abbr">{{ selectedForecast.station.station_abbr }}</span>
-            </div>
-            <div class="station-meta">
-              <h2 class="station-name">{{ selectedForecast.station.point_name }}</h2>
-              <div class="station-tags">
-                <span class="tag">
-                  <span class="material-icons">height</span>
-                  {{ selectedForecast.station.point_height_masl | number:'1.0-0' }} m
-                </span>
-                <span class="tag">
-                  <span class="material-icons">place</span>
-                  {{ selectedForecast.station.distanceKm | number:'1.1-1' }} km away
-                </span>
-                <span class="tag">{{ selectedForecast.station.point_type_en }}</span>
+              <!-- Right Chart cell -->
+              <div class="station-chart-cell">
+                <app-forecast-chart [forecast]="fc"></app-forecast-chart>
               </div>
             </div>
           </div>
-
-          <!-- Current / latest conditions -->
-          <div class="current-conditions" *ngIf="currentHour">
-            <div class="condition-card" *ngIf="currentHour.temperature !== undefined">
-              <span class="cond-icon">🌡️</span>
-              <span class="cond-value">{{ currentHour.temperature | number:'1.1-1' }}°C</span>
-              <span class="cond-label">Temperature</span>
-            </div>
-            <div class="condition-card" *ngIf="currentHour.precipitation !== undefined">
-              <span class="cond-icon">💧</span>
-              <span class="cond-value">{{ currentHour.precipitation | number:'1.1-1' }} mm</span>
-              <span class="cond-label">Precipitation</span>
-            </div>
-            <div class="condition-card" *ngIf="currentHour.windSpeed !== undefined">
-              <span class="cond-icon">💨</span>
-              <span class="cond-value">{{ currentHour.windSpeed | number:'1.0-0' }} km/h</span>
-              <span class="cond-label">Wind</span>
-            </div>
-            <div class="condition-card" *ngIf="currentHour.precipProb !== undefined">
-              <span class="cond-icon">☂️</span>
-              <span class="cond-value">{{ currentHour.precipProb | number:'1.0-0' }}%</span>
-              <span class="cond-label">Precip. prob.</span>
-            </div>
-          </div>
-
-          <!-- Forecast chart -->
-          <app-forecast-chart [forecast]="selectedForecast"></app-forecast-chart>
         </div>
 
         <!-- AI Export section -->
         <div class="ai-export">
-          <button class="ai-btn" (click)="exportForAi()" [class.copied]="copied">
-            <span class="material-icons">{{ copied ? 'check_circle' : 'content_copy' }}</span>
-            {{ copied ? 'Copied!' : 'Copy AI-ready text' }}
-          </button>
+          <div class="ai-export-header">
+            <span class="ai-export-label">
+              <span class="material-icons">smart_toy</span>
+              Copy AI-Ready Prompt
+            </span>
+          </div>
+          <div class="ai-btn-group">
+            <button class="ai-btn" (click)="exportForAi(1)" [class.copied]="copiedDays === 1">
+              <span class="material-icons">{{ copiedDays === 1 ? 'check_circle' : 'content_copy' }}</span>
+              1 Day
+            </button>
+            <button class="ai-btn" (click)="exportForAi(2)" [class.copied]="copiedDays === 2">
+              <span class="material-icons">{{ copiedDays === 2 ? 'check_circle' : 'content_copy' }}</span>
+              2 Days
+            </button>
+            <button class="ai-btn" (click)="exportForAi(3)" [class.copied]="copiedDays === 3">
+              <span class="material-icons">{{ copiedDays === 3 ? 'check_circle' : 'content_copy' }}</span>
+              3 Days
+            </button>
+          </div>
 
-          <!-- Text preview (always visible after first copy, even if clipboard fails) -->
           <div class="ai-preview" *ngIf="displayAiText">
             <div class="ai-preview-header">
               <span class="ai-preview-label">
@@ -252,179 +235,184 @@ import { ForecastChartComponent } from '../forecast-chart/forecast-chart.compone
       color: var(--text-secondary);
     }
 
-    /* ── Stations content ────────────────────────── */
-    .stations-content {
+    /* ── Scrollable stations list ─────────────── */
+    .stations-scroll {
       flex: 1;
+      overflow: hidden;
+      padding: 10px;
       display: flex;
       flex-direction: column;
-      overflow: hidden;
+      gap: 14px;
     }
 
-    /* Station tab selector */
-    .station-tabs {
-      display: flex;
-      gap: 4px;
-      padding: 10px 10px 0;
+    /* Horizontal scroll layout styling */
+    .horizontal-scroll-container {
       overflow-x: auto;
-      flex-shrink: 0;
-    }
-    .station-tab {
-      flex: 0 0 auto;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 10px;
-      background: var(--bg-tertiary);
+      overflow-y: auto;
+      flex: 1;
+      width: 100%;
       border: 1px solid var(--border-subtle);
       border-radius: var(--radius-md);
-      cursor: pointer;
-      transition: all 0.2s;
-      color: var(--text-secondary);
-      font-family: var(--font-body);
+      background: var(--bg-tertiary);
     }
-    .station-tab:hover {
-      border-color: var(--border-muted);
-      color: var(--text-primary);
+    .stations-grid-layout {
+      display: flex;
+      flex-direction: column;
+      width: max-content;
     }
-    .station-tab.active {
-      background: rgba(88,166,255,0.1);
-      border-color: var(--accent-blue);
-      color: var(--text-primary);
+    .station-row {
+      display: flex;
+      align-items: stretch;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .station-row:last-child {
+      border-bottom: none;
+    }
+    .station-sticky-header {
+      position: sticky;
+      left: 0;
+      z-index: 10;
+      background: var(--bg-secondary);
+      width: 200px;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 8px 12px;
+      box-sizing: border-box;
+      border-right: 1px solid var(--border-subtle);
+    }
+    .station-card-compact {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      width: 100%;
+    }
+    .station-rank-name-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
     .station-rank {
       width: 20px;
       height: 20px;
       border-radius: 50%;
       font-size: 10px;
-      font-weight: 700;
+      font-weight: 800;
       color: #0d1117;
       display: flex;
       align-items: center;
       justify-content: center;
       flex-shrink: 0;
     }
-    .station-info { display: flex; flex-direction: column; align-items: flex-start; }
-    .station-abbr { font-size: 11px; font-weight: 700; line-height: 1; }
-    .station-dist { font-size: 10px; color: var(--text-muted); line-height: 1; }
-
-    /* Station detail */
-    .station-detail {
-      flex: 1;
-      overflow-y: auto;
-      padding: 10px;
+    .station-name-wrap {
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      min-width: 0;
+      flex: 1;
     }
-    .station-header {
-      display: flex;
-      gap: 12px;
-      align-items: flex-start;
-      background: var(--bg-card);
-      border-radius: var(--radius-md);
-      padding: 12px;
-      border: 1px solid var(--border-subtle);
-    }
-    .station-badge {
-      width: 44px;
-      height: 44px;
-      border-radius: var(--radius-md);
-      border: 2px solid;
-      background: rgba(255,255,255,0.04);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-    }
-    .badge-abbr {
-      font-size: 12px;
-      font-weight: 800;
-      color: var(--text-primary);
-      letter-spacing: 0.5px;
-    }
-    .station-meta { flex: 1; min-width: 0; }
     .station-name {
-      font-size: 14px;
+      font-size: 12px;
       font-weight: 700;
       color: var(--text-primary);
-      margin-bottom: 6px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      line-height: 1.2;
     }
-    .station-tags {
+    .station-abbr {
+      font-size: 10px;
+      color: var(--accent-cyan);
+      font-weight: 600;
+      line-height: 1.1;
+    }
+    .station-meta-row {
       display: flex;
-      flex-wrap: wrap;
-      gap: 4px;
+      gap: 6px;
+      font-size: 10px;
+      color: var(--text-muted);
+      align-items: center;
     }
-    .tag {
+    .station-meta-row .sep {
+      color: var(--border-subtle);
+    }
+    .station-meta-row .detail-item {
       display: flex;
       align-items: center;
       gap: 2px;
-      font-size: 10px;
-      color: var(--text-muted);
-      background: var(--bg-tertiary);
-      border: 1px solid var(--border-subtle);
-      border-radius: 4px;
-      padding: 2px 5px;
     }
-    .tag .material-icons { font-size: 11px; color: var(--accent-blue); }
-
-    /* Current conditions */
-    .current-conditions {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 6px;
+    .station-meta-row .detail-item .material-icons {
+      font-size: 11px;
+      color: var(--accent-blue);
     }
-    .condition-card {
-      background: var(--bg-card);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-md);
-      padding: 10px 6px;
+    .station-conditions-row {
       display: flex;
-      flex-direction: column;
+      gap: 8px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-top: 2px;
+    }
+    .cond-val {
+      display: flex;
       align-items: center;
-      gap: 3px;
-      transition: all 0.2s;
+      gap: 2px;
     }
-    .condition-card:hover {
-      border-color: var(--border-accent);
-      transform: translateY(-1px);
+    .station-chart-cell {
+      flex: 1;
     }
-    .cond-icon { font-size: 18px; line-height: 1; }
-    .cond-value { font-size: 12px; font-weight: 700; color: var(--text-primary); }
-    .cond-label { font-size: 9px; color: var(--text-muted); text-align: center; }
 
-    /* AI export */
+    /* ── AI export ───────────────────────────── */
     .ai-export {
-      padding: 10px;
+      padding: 10px 0 0;
       display: flex;
       flex-direction: column;
       gap: 8px;
-      flex-shrink: 0;
       border-top: 1px solid var(--border-subtle);
+      margin-top: 4px;
+    }
+    .ai-export-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .ai-export-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .ai-export-label .material-icons {
+      font-size: 14px;
+      color: var(--accent-cyan);
+    }
+    .ai-btn-group {
+      display: flex;
+      gap: 6px;
+      width: 100%;
     }
     .ai-btn {
+      flex: 1;
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 8px;
-      padding: 10px;
-      background: linear-gradient(135deg, rgba(88,166,255,0.15) 0%, rgba(57,208,245,0.1) 100%);
-      border: 1px solid rgba(88,166,255,0.4);
-      border-radius: var(--radius-md);
+      gap: 6px;
+      padding: 8px 6px;
+      background: linear-gradient(135deg, rgba(88,166,255,0.1) 0%, rgba(57,208,245,0.06) 100%);
+      border: 1px solid rgba(88,166,255,0.3);
+      border-radius: var(--radius-sm);
       color: var(--accent-blue);
       font-family: var(--font-body);
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 600;
       cursor: pointer;
-      transition: all 0.25s;
-      width: 100%;
+      transition: all 0.2s ease;
     }
     .ai-btn:hover {
-      background: linear-gradient(135deg, rgba(88,166,255,0.25) 0%, rgba(57,208,245,0.2) 100%);
+      background: linear-gradient(135deg, rgba(88,166,255,0.2) 0%, rgba(57,208,245,0.12) 100%);
       border-color: var(--accent-blue);
-      box-shadow: 0 0 16px rgba(88,166,255,0.2);
       transform: translateY(-1px);
     }
     .ai-btn.copied {
@@ -432,7 +420,7 @@ import { ForecastChartComponent } from '../forecast-chart/forecast-chart.compone
       border-color: var(--accent-green);
       background: rgba(63,185,80,0.1);
     }
-    .ai-btn .material-icons { font-size: 16px; }
+    .ai-btn .material-icons { font-size: 13px; }
     .ai-hint {
       font-size: 10px;
       color: var(--text-muted);
@@ -519,96 +507,80 @@ export class StationPanelComponent implements OnChanges {
   @Input() isLoading = false;
   @Input() clickedLat: number | null = null;
   @Input() clickedLon: number | null = null;
-  // aiText input kept for backward compat but we now generate locally
-  @Input() aiText = '';
-  @Output() aiTextRequested = new EventEmitter<void>(); // kept for compat
 
   @ViewChild('aiTextarea') aiTextareaEl?: ElementRef<HTMLTextAreaElement>;
 
   private weatherService = inject(WeatherService);
   private ngZone = inject(NgZone);
 
-  selectedIndex = 0;
-  copied = false;
+  copiedDays = 0;
   generatedText = '';
   aiTextDismissed = false;
 
   readonly rankColors = ['#f0c000', '#3fb950', '#58a6ff', '#bc8cff', '#f85149'];
 
   ngOnChanges(): void {
-    // Reset on new location
-    this.selectedIndex = 0;
-    this.copied = false;
+    this.copiedDays = 0;
     this.generatedText = '';
     this.aiTextDismissed = false;
   }
 
-  get selectedForecast(): StationForecast | null {
-    return this.forecasts[this.selectedIndex] ?? null;
-  }
-
-  get currentHour() {
-    if (!this.selectedForecast) return null;
+  getCurrentHour(fc: StationForecast): HourlyForecast | null {
     const now = new Date();
-    const past = this.selectedForecast.hourly.filter(h => h.datetime <= now);
-    return past.length > 0 ? past[past.length - 1] : this.selectedForecast.hourly[0] ?? null;
+    const past = fc.hourly.filter(h => h.datetime <= now);
+    return past.length > 0 ? past[past.length - 1] : fc.hourly[0] ?? null;
   }
 
   get displayAiText(): string {
-    return this.aiTextDismissed ? '' : (this.generatedText || this.aiText);
+    return this.aiTextDismissed ? '' : this.generatedText;
   }
 
-  selectStation(i: number): void {
-    this.selectedIndex = i;
-  }
-
-  exportForAi(): void {
+  exportForAi(numDays: number): void {
     if (!this.forecasts.length || this.clickedLat === null || this.clickedLon === null) return;
 
-    // Generate the text directly here
     const text = this.weatherService.generateAiText(
-      this.forecasts, this.clickedLat, this.clickedLon
+      this.forecasts, this.clickedLat, this.clickedLon, numDays
     );
     console.log('[WeatherApp] AI text generated, length:', text.length, 'preview:', text.slice(0, 80));
     this.generatedText = text;
     this.aiTextDismissed = false;
 
-    // Wait one tick so Angular renders the textarea, then copy from the visible element
-    setTimeout(() => this.copyGeneratedText(text), 50);
+    setTimeout(() => this.copyGeneratedText(text, numDays), 50);
   }
 
-  private copyGeneratedText(text: string): void {
-    // Primary: Clipboard API (HTTPS / localhost only)
+  private copyGeneratedText(text: string, numDays: number): void {
     if (navigator.clipboard && window.isSecureContext) {
       navigator.clipboard.writeText(text)
-        .then(() => this.markCopied())
-        .catch(() => this.execCommandFromVisibleTextarea());
+        .then(() => this.markCopied(numDays))
+        .catch(() => this.execCommandFromVisibleTextarea(numDays));
       return;
     }
-    // Fallback: use the VISIBLE rendered textarea (definitely focusable)
-    this.execCommandFromVisibleTextarea();
+    this.execCommandFromVisibleTextarea(numDays);
   }
 
-  private execCommandFromVisibleTextarea(): void {
+  private execCommandFromVisibleTextarea(numDays: number): void {
     const ta = this.aiTextareaEl?.nativeElement;
     if (!ta) {
-      // textarea not rendered yet — shouldn't happen after 50ms but handle it
       console.warn('[WeatherApp] ai-textarea not found in DOM');
-      this.markCopied(); // still show "copied" since text is visible
+      this.markCopied(numDays);
       return;
     }
     ta.focus();
-    ta.setSelectionRange(0, ta.value.length); // select all
+    ta.setSelectionRange(0, ta.value.length);
     let ok = false;
     try { ok = document.execCommand('copy'); } catch {}
     console.log('[WeatherApp] execCommand copy result:', ok);
-    this.markCopied();
+    this.markCopied(numDays);
   }
 
-  private markCopied(): void {
+  private markCopied(numDays: number): void {
     this.ngZone.run(() => {
-      this.copied = true;
-      setTimeout(() => this.copied = false, 3000);
+      this.copiedDays = numDays;
+      setTimeout(() => {
+        if (this.copiedDays === numDays) {
+          this.copiedDays = 0;
+        }
+      }, 3000);
     });
   }
 
@@ -616,4 +588,3 @@ export class StationPanelComponent implements OnChanges {
     this.aiTextDismissed = true;
   }
 }
-

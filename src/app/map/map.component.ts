@@ -1,5 +1,5 @@
 import {
-  Component, AfterViewInit, OnDestroy, Output, EventEmitter, inject, NgZone
+  Component, AfterViewInit, OnDestroy, Output, EventEmitter, inject, NgZone, Input
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import Map from 'ol/Map';
@@ -166,6 +166,8 @@ register(proj4);
   `]
 })
 export class MapComponent implements AfterViewInit, OnDestroy {
+  @Input() initialLat: number | null = null;
+  @Input() initialLon: number | null = null;
   @Output() locationSelected = new EventEmitter<{ lat: number; lon: number }>();
   @Output() stationsUpdated  = new EventEmitter<WeatherStation[]>();
 
@@ -222,6 +224,12 @@ export class MapComponent implements AfterViewInit, OnDestroy {
       visible: false, maxZoom: 20
     });
 
+    const hasInitial = this.initialLat !== null && this.initialLon !== null;
+    const initialCenter = hasInitial
+      ? fromLonLat([this.initialLon!, this.initialLat!])
+      : fromLonLat([8.23, 46.82]);
+    const initialZoom = hasInitial ? 11 : 8;
+
     this.map = new Map({
       target: 'weather-map',
       layers: [
@@ -233,14 +241,18 @@ export class MapComponent implements AfterViewInit, OnDestroy {
         new VectorLayer({ source: this.selectedMarkerSource }),
       ],
       view: new View({
-        // Centered on Switzerland
-        center: fromLonLat([8.23, 46.82]),
-        zoom: 8,
+        center: initialCenter,
+        zoom: initialZoom,
         minZoom: 7,
         maxZoom: 20,
         extent: fromLonLat([5.0, 44.5]).concat(fromLonLat([11.5, 48.5])) as any
       })
     });
+
+    if (hasInitial) {
+      this.hasClicked = true;
+      this.placeSelectedMarker(initialCenter);
+    }
 
     this.map.on('click', (evt: MapBrowserEvent<any>) => {
       const lonLat = toLonLat(evt.coordinate);
@@ -296,6 +308,19 @@ export class MapComponent implements AfterViewInit, OnDestroy {
       })
     }));
     this.previewMarkerSource.addFeature(pin);
+  }
+
+  selectCoordinate(lat: number, lon: number): void {
+    if (!this.map) return;
+    const coord = fromLonLat([lon, lat]);
+    this.hasClicked = true;
+    this.placeSelectedMarker(coord);
+    this.map.getView().animate({
+      center: coord,
+      zoom: 11,
+      duration: 500,
+      easing: easeOut
+    });
   }
 
   setLayer(layer: 'colour' | 'bw' | 'satellite'): void {

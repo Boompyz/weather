@@ -317,7 +317,7 @@ export class WeatherService {
   private deg2rad(d: number) { return d * Math.PI / 180; }
 
   /** Generate AI-ready text summary for a set of forecasts */
-  generateAiText(forecasts: StationForecast[], clickedLat: number, clickedLon: number): string {
+  generateAiText(forecasts: StationForecast[], clickedLat: number, clickedLon: number, numDays = 3): string {
     const now = new Date();
     const lines: string[] = [
       `# Swiss Weather Forecast Report`,
@@ -336,17 +336,18 @@ export class WeatherService {
       lines.push(`Coordinates: ${s.lat.toFixed(4)}°N, ${s.lon.toFixed(4)}°E`);
       lines.push(``);
 
-      // Next 48 hours hourly
-      const next48h = fc.hourly
+      // Next hours hourly based on numDays parameter
+      const hoursCount = numDays * 24;
+      const nextHours = fc.hourly
         .filter(h => h.datetime >= now)
-        .slice(0, 48);
+        .slice(0, hoursCount);
 
-      if (next48h.length > 0) {
-        lines.push(`#### Hourly Forecast (next 48 hours)`);
+      if (nextHours.length > 0) {
+        lines.push(`#### Hourly Forecast (next ${hoursCount} hours)`);
         lines.push(`| Time (local) | Temp (°C) | Precip (mm) | Wind (km/h) | Gust (km/h) | Precip% | Sunshine (min) |`);
         lines.push(`|---|---|---|---|---|---|---|`);
 
-        for (const h of next48h) {
+        for (const h of nextHours) {
           const timeStr = h.datetime.toLocaleString('en-CH', {
             timeZone: 'Europe/Zurich',
             month: 'short', day: 'numeric',
@@ -386,12 +387,13 @@ export class WeatherService {
       lines.push(``);
     }
 
-    lines.push(`## How to use this data`);
-    lines.push(`Ask questions like:`);
-    lines.push(`- "Will it be good weather for hiking tomorrow near ${forecasts[0]?.station.point_name}?"`);
-    lines.push(`- "What are the temperature trends over the next 3 days?"`);
-    lines.push(`- "Which station has the best conditions for outdoor activities?"`);
-    lines.push(`- "Is there risk of thunderstorms in the next 24 hours?"`);
+    let targetDayName = 'tomorrow';
+    if (numDays > 1) {
+      const targetDate = new Date(now);
+      targetDate.setDate(now.getDate() + numDays);
+      targetDayName = targetDate.toLocaleDateString('en-US', { weekday: 'long' });
+    }
+    lines.push(`How suitable does the weather for ${targetDayName} look for hiking?`);
 
     return lines.join('\n');
   }
