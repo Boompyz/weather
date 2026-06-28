@@ -1,4 +1,4 @@
-import { Component, Input, OnChanges, SimpleChanges } from '@angular/core';
+import { Component, Input, OnChanges, SimpleChanges, Output, EventEmitter, OnDestroy, ElementRef, ViewChild, NgZone, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { StationForecast, HourlyForecast, DailyForecast } from '../weather.service';
 
@@ -24,6 +24,11 @@ const SUNSHINE_H = 40;
         <div class="meteo-scroll" *ngIf="hours.length > 0">
           <!-- All rows are inside this single scroll container -->
           <div class="meteo-canvas" [style.width.px]="canvasWidth">
+            <!-- Global hover line -->
+            <div *ngIf="hoveredHourIndex !== null"
+                 class="global-hover-line"
+                 [style.left.px]="60 + hoveredHourIndex * 32 + 16">
+            </div>
 
             <!-- 1 ─ Weather icons row -->
             <div class="row row-icons">
@@ -65,7 +70,7 @@ const SUNSHINE_H = 40;
                         [style.bottom.px]="tempToY(t)">{{ t }}</span>
                 </div>
               </div>
-              <div class="row-content chart-content">
+              <div #chartContent class="row-content chart-content">
                 <!-- Gridlines -->
                 <svg class="chart-grid" [attr.viewBox]="'0 0 ' + svgW + ' ' + CHART_H"
                      [attr.width]="svgW" [attr.height]="CHART_H" preserveAspectRatio="none">
@@ -96,7 +101,19 @@ const SUNSHINE_H = 40;
                   <circle *ngFor="let pt of tempPoints"
                           [attr.cx]="pt.x" [attr.cy]="pt.y" r="2.5"
                           class="temp-dot"/>
+                  <!-- Hover highlight dot -->
+                  <ng-container *ngIf="getHoveredPoint() as pt">
+                    <circle [attr.cx]="pt.x" [attr.cy]="pt.y" r="4.5" class="temp-dot-hovered"/>
+                  </ng-container>
                 </svg>
+
+                <!-- Floating exact temp label -->
+                <div *ngIf="getHoveredPoint() as pt"
+                     class="hover-temp-label"
+                     [style.left.px]="pt.x"
+                     [style.top.px]="pt.y < 25 ? pt.y + 12 : pt.y - 25">
+                  {{ hours[hoveredHourIndex!].temperature | number:'1.1-1' }}°C
+                </div>
 
                 <div class="y-right-label">mm/h</div>
               </div>
@@ -107,8 +124,9 @@ const SUNSHINE_H = 40;
               <div class="y-label"></div>
               <div class="row-content">
                 <div class="time-cell" *ngFor="let h of hours; let i = index"
-                     [class.day-start]="isDayBoundary(i)">
-                  <span class="time-hour" *ngIf="showHourLabel(h)">{{ formatHour(h) }}</span>
+                     [class.day-start]="isDayBoundary(i)"
+                     [class.hover-highlight]="i === hoveredHourIndex">
+                  <span class="time-hour" *ngIf="showHourLabel(h) || i === hoveredHourIndex">{{ formatHour(h) }}</span>
                   <span class="time-day" *ngIf="isDayBoundary(i)">{{ formatDayLabel(h) }}</span>
                 </div>
               </div>
@@ -194,6 +212,7 @@ const SUNSHINE_H = 40;
       display: flex;
       flex-direction: column;
       min-width: max-content;
+      position: relative;
     }
 
     /* ── Generic row ────────────────────────────────── */
@@ -448,10 +467,67 @@ const SUNSHINE_H = 40;
       color: var(--text-muted);
       font-size: 12px;
     }
+
+    /* ── Hover styles ────────────────────────────────── */
+    .global-hover-line {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 1px;
+      border-left: 1px dashed var(--accent-cyan);
+      opacity: 0.65;
+      pointer-events: none;
+      z-index: 9;
+    }
+    .temp-dot-hovered {
+      fill: var(--accent-cyan);
+      stroke: var(--bg-primary);
+      stroke-width: 1.5;
+    }
+    .hover-temp-label {
+      position: absolute;
+      transform: translateX(-50%);
+      background: rgba(22, 27, 34, 0.95);
+      border: 1px solid var(--accent-cyan);
+      border-radius: 4px;
+      color: var(--text-primary);
+      font-size: 10px;
+      font-family: var(--font-mono);
+      font-weight: 700;
+      padding: 2px 5px;
+      pointer-events: none;
+      white-space: nowrap;
+      z-index: 12;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+    }
+    .time-cell.hover-highlight {
+      background: rgba(57, 208, 245, 0.12);
+      border-radius: 4px;
+    }
+    .time-cell.hover-highlight .time-hour {
+      color: var(--accent-cyan);
+      font-weight: 700;
+    }
   `]
 })
-export class ForecastChartComponent implements OnChanges {
+export class ForecastChartComponent implements OnChanges, OnDestroy {
   @Input() forecast: StationForecast | null = null;
+  @Input() hoveredHourIndex: number | null = null;
+  @Output() hoverChanged = new EventEmitter<number | null>();
+
+  private ngZone = inject(NgZone);
+  private chartContentEl: HTMLElement | null = null;
+
+  @ViewChild('chartContent') set chartContent(element: ElementRef<HTMLElement> | undefined) {
+    if (this.chartContentEl) {
+      this.cleanupHoverListeners(this.chartContentEl);
+      this.chartContentEl = null;
+    }
+    if (element) {
+      this.chartContentEl = element.nativeElement;
+      this.setupHoverListeners(this.chartContentEl);
+    }
+  }
 
   activeTab: 'hourly' | 'daily' = 'hourly';
 
@@ -463,7 +539,7 @@ export class ForecastChartComponent implements OnChanges {
   canvasWidth = 0;
 
   // Temperature
-  tempPoints: { x: number; y: number }[] = [];
+  tempPoints: { x: number; y: number; index: number }[] = [];
   tempLinePath = '';
   tempBandPath = '';
   tempTicks: number[] = [];
@@ -541,7 +617,7 @@ export class ForecastChartComponent implements OnChanges {
       if (t === undefined) continue;
       const x = i * COL_W + COL_W / 2;
       const y = CHART_H - this.tempToY(t);
-      this.tempPoints.push({ x, y });
+      this.tempPoints.push({ x, y, index: i });
     }
 
     // Build smooth bezier path
@@ -756,5 +832,51 @@ export class ForecastChartComponent implements OnChanges {
     if (code <= 27) return '❄️';
     if (code <= 30) return '🌩️';
     return '🌫️';
+  }
+
+  // ── Hover interaction (running outside Angular Zone for 60fps performance) ──
+  private setupHoverListeners(el: HTMLElement): void {
+    this.ngZone.runOutsideAngular(() => {
+      el.addEventListener('mousemove', this.handleMouseMove, { passive: true });
+      el.addEventListener('mouseleave', this.handleMouseLeave, { passive: true });
+    });
+  }
+
+  private cleanupHoverListeners(el: HTMLElement): void {
+    el.removeEventListener('mousemove', this.handleMouseMove);
+    el.removeEventListener('mouseleave', this.handleMouseLeave);
+  }
+
+  ngOnDestroy(): void {
+    if (this.chartContentEl) {
+      this.cleanupHoverListeners(this.chartContentEl);
+    }
+  }
+
+  private handleMouseMove = (event: MouseEvent): void => {
+    if (!this.chartContentEl) return;
+    const rect = this.chartContentEl.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const index = Math.max(0, Math.min(this.hours.length - 1, Math.floor(x / COL_W)));
+    
+    if (index !== this.hoveredHourIndex) {
+      this.ngZone.run(() => {
+        this.hoverChanged.emit(index);
+      });
+    }
+  };
+
+  private handleMouseLeave = (): void => {
+    if (this.hoveredHourIndex !== null) {
+      this.ngZone.run(() => {
+        this.hoverChanged.emit(null);
+      });
+    }
+  };
+
+  getHoveredPoint(): { x: number; y: number } | null {
+    if (this.hoveredHourIndex === null) return null;
+    const pt = this.tempPoints.find(p => p.index === this.hoveredHourIndex);
+    return pt || null;
   }
 }

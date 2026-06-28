@@ -67,16 +67,20 @@ import { ForecastChartComponent } from '../forecast-chart/forecast-chart.compone
                     <span class="sep">|</span>
                     <span class="detail-item"><span class="material-icons">place</span>{{ fc.station.distanceKm | number:'1.1-1' }}km</span>
                   </div>
-                  <div class="station-conditions-row" *ngIf="getCurrentHour(fc) as cur">
-                    <span class="cond-val">🌡️ {{ cur.temperature | number:'1.0-0' }}°C</span>
-                    <span class="cond-val">💨 {{ cur.windSpeed | number:'1.0-0' }}k/h</span>
+                  <div class="station-conditions-row" *ngIf="getHourForecast(fc, hoveredHourIndex) as cur">
+                    <span class="cond-val" [class.hover-active]="hoveredHourIndex !== null">🌡️ {{ cur.temperature | number:'1.1-1' }}°C</span>
+                    <span class="cond-val" [class.hover-active]="hoveredHourIndex !== null">💨 {{ cur.windSpeed | number:'1.0-0' }}k/h</span>
                   </div>
                 </div>
               </div>
 
               <!-- Right Chart cell -->
               <div class="station-chart-cell">
-                <app-forecast-chart [forecast]="fc"></app-forecast-chart>
+                <app-forecast-chart
+                  [forecast]="fc"
+                  [hoveredHourIndex]="hoveredHourIndex"
+                  (hoverChanged)="hoveredHourIndex = $event">
+                </app-forecast-chart>
               </div>
             </div>
           </div>
@@ -358,6 +362,10 @@ import { ForecastChartComponent } from '../forecast-chart/forecast-chart.compone
       align-items: center;
       gap: 2px;
     }
+    .cond-val.hover-active {
+      color: var(--accent-cyan);
+      font-weight: 700;
+    }
     .station-chart-cell {
       flex: 1;
     }
@@ -513,6 +521,7 @@ export class StationPanelComponent implements OnChanges {
   private weatherService = inject(WeatherService);
   private ngZone = inject(NgZone);
 
+  hoveredHourIndex: number | null = null;
   copiedDays = 0;
   generatedText = '';
   aiTextDismissed = false;
@@ -523,12 +532,22 @@ export class StationPanelComponent implements OnChanges {
     this.copiedDays = 0;
     this.generatedText = '';
     this.aiTextDismissed = false;
+    this.hoveredHourIndex = null;
   }
 
   getCurrentHour(fc: StationForecast): HourlyForecast | null {
     const now = new Date();
     const past = fc.hourly.filter(h => h.datetime <= now);
     return past.length > 0 ? past[past.length - 1] : fc.hourly[0] ?? null;
+  }
+
+  getHourForecast(fc: StationForecast, index: number | null): HourlyForecast | null {
+    if (index === null) {
+      return this.getCurrentHour(fc);
+    }
+    const now = new Date();
+    const filtered = fc.hourly.filter(h => h.datetime >= now).slice(0, 72);
+    return filtered[index] ?? null;
   }
 
   get displayAiText(): string {
