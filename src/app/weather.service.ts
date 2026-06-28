@@ -47,9 +47,23 @@ const STAC_BASE = 'https://data.geo.admin.ch';
 const COLLECTION = 'ch.meteoschweiz.ogd-local-forecasting';
 const META_POINTS_URL = `${STAC_BASE}/${COLLECTION}/ogd-local-forecasting_meta_point.csv`;
 
-// Key parameters to fetch (one CSV per parameter, containing all points)
-const HOURLY_PARAMS = ['tre200h0', 'rre150h0', 'fu3010h0', 'fu3010h1', 'rp0003i0', 'sre000h0', 'jww003i0', 'nprolohs'];
-const DAILY_PARAMS  = ['tre200pn', 'tre200px', 'rka150p0', 'jp2000d0'];
+function mapWmoToMeteoSwissIcon(wmoCode: number): number {
+  if (wmoCode === 0) return 1; // Clear sky
+  if (wmoCode === 1 || wmoCode === 2) return 3; // Mainly clear / partly cloudy
+  if (wmoCode === 3) return 8; // Overcast
+  if (wmoCode === 45 || wmoCode === 48) return 31; // Fog
+  if (wmoCode === 51 || wmoCode === 53 || wmoCode === 55) return 10; // Drizzle
+  if (wmoCode === 56 || wmoCode === 57) return 23; // Freezing drizzle -> Snow
+  if (wmoCode === 61 || wmoCode === 63) return 14; // Rain
+  if (wmoCode === 65) return 16; // Heavy rain
+  if (wmoCode === 66 || wmoCode === 67) return 24; // Freezing rain -> Snow/rain
+  if (wmoCode === 71 || wmoCode === 73 || wmoCode === 75 || wmoCode === 77) return 22; // Snow
+  if (wmoCode === 80 || wmoCode === 81 || wmoCode === 82) return 11; // Showers
+  if (wmoCode === 85 || wmoCode === 86) return 23; // Snow showers
+  if (wmoCode === 95) return 19; // Thunderstorm
+  if (wmoCode === 96 || wmoCode === 99) return 29; // Thunderstorm with hail
+  return 1;
+}
 
 @Injectable({ providedIn: 'root' })
 export class WeatherService {
@@ -69,119 +83,6 @@ export class WeatherService {
       catchError(err => {
         console.error('Failed to load stations:', err);
         return of([]);
-      })
-    );
-  }
-
-  /** Find stations near a WGS84 coordinate, sorted by distance */
-  getNearbyStations(lat: number, lon: number, maxCount = 5, maxDistanceKm = 80): Observable<WeatherStation[]> {
-    return this.getStations().pipe(
-      map(stations => {
-        const withDist = stations.map(s => ({
-          ...s,
-          distanceKm: this.haversineKm(lat, lon, s.lat, s.lon)
-        }));
-        return withDist
-          .filter(s => s.distanceKm! <= maxDistanceKm)
-          .sort((a, b) => a.distanceKm! - b.distanceKm!)
-          .slice(0, maxCount);
-      })
-    );
-  }
-
-  private stacItemCache = new Map<string, any>();
-
-  private getSTACItemAssets(itemId: string): Observable<any> {
-    if (this.stacItemCache.has(itemId)) return of(this.stacItemCache.get(itemId));
-
-    return this.http.get<any>(`${STAC_BASE}/api/stac/v1/collections/${COLLECTION}/items/${itemId}`).pipe(
-      map(item => {
-        const assets = item?.assets ?? {};
-        this.stacItemCache.set(itemId, assets);
-        return assets;
-      }),
-      catchError(() => of({}))
-    );
-  }
-
-  /** Fetch forecast for a set of stations using a Web Worker */
-  getForecastsForStations(stations: WeatherStation[]): Observable<StationForecast[]> {
-    if (stations.length === 0) return of([]);
-
-    return this.getLatestItemId().pipe(
-      switchMap(itemId => {
-        if (!itemId) return of(stations.map(s => ({ station: s, hourly: [], daily: [], fetchedAt: new Date() })));
-
-        const pointIds = stations.map(s => s.point_id);
-        const date = itemId.replace('-ch', '');
-        const urlMap: Record<string, string> = {};
-        const allParams = [...HOURLY_PARAMS, ...DAILY_PARAMS];
-
-        // Fetch STAC metadata once to resolve correct asset URLs
-        return this.getSTACItemAssets(itemId).pipe(
-          switchMap(assets => {
-            for (const param of allParams) {
-              const key = Object.keys(assets).find(k => k.includes(`.${param}.csv`));
-              urlMap[param] = key ? assets[key].href : `${STAC_BASE}/${COLLECTION}/${itemId}/vnut12.lssw.${date}0000.${param}.csv`;
-            }
-
-            return new Observable<StationForecast[]>(observer => {
-              // Instantiate the Web Worker!
-              const worker = new Worker(new URL('./weather.worker', import.meta.url), { type: 'module' });
-
-              worker.onmessage = ({ data }) => {
-                if (data.success) {
-                  // Re-instantiate datetime/date strings back to Date objects
-                  const forecasts = data.forecasts.map((f: any) => ({
-                    ...f,
-                    hourly: f.hourly.map((h: any) => ({
-                      ...h,
-                      datetime: new Date(h.datetime)
-                    })),
-                    daily: f.daily.map((d: any) => ({
-                      ...d,
-                      date: new Date(d.date)
-                    })),
-                    fetchedAt: new Date(f.fetchedAt)
-                  }));
-                  observer.next(forecasts);
-                } else {
-                  observer.error(new Error(data.error));
-                }
-                observer.complete();
-                worker.terminate();
-              };
-
-              worker.onerror = (err) => {
-                observer.error(err);
-                observer.complete();
-                worker.terminate();
-              };
-
-              worker.postMessage({
-                urls: urlMap,
-                pointIds,
-                stations
-              });
-            });
-          })
-        );
-      })
-    );
-  }
-
-  private getLatestItemId(): Observable<string | null> {
-    if (this.latestItemId) return of(this.latestItemId);
-
-    return this.http.get<any>(`${STAC_BASE}/api/stac/v1/collections/${COLLECTION}/items?limit=1`).pipe(
-      map(res => {
-        const id = res?.features?.[0]?.id ?? null;
-        this.latestItemId = id;
-        return id;
-      }),
-      catchError(err => {
-        console.error('Failed to get latest item:', err);
-        return of(null);
       })
     );
   }
@@ -213,6 +114,110 @@ export class WeatherService {
       };
     }).filter(s => s.point_id > 0 && s.lat !== 0 && s.lon !== 0);
   }
+
+  /** Find stations near a WGS84 coordinate, sorted by distance */
+  getNearbyStations(lat: number, lon: number, maxCount = 5, maxDistanceKm = 80): Observable<WeatherStation[]> {
+    return this.getStations().pipe(
+      map(stations => {
+        const withDist = stations.map(s => ({
+          ...s,
+          distanceKm: this.haversineKm(lat, lon, s.lat, s.lon)
+        }));
+        return withDist
+          .filter(s => s.distanceKm! <= maxDistanceKm)
+          .sort((a, b) => a.distanceKm! - b.distanceKm!)
+          .slice(0, maxCount);
+      })
+    );
+  }
+
+  /** Fetch forecast for a set of stations from the high-resolution regional models of Open-Meteo */
+  getForecastsForStations(stations: WeatherStation[]): Observable<StationForecast[]> {
+    if (stations.length === 0) return of([]);
+
+    const lats = stations.map(s => s.lat).join(',');
+    const lons = stations.map(s => s.lon).join(',');
+
+    const url = `https://api.open-meteo.com/v1/forecast` +
+      `?latitude=${lats}&longitude=${lons}` +
+      `&hourly=temperature_2m,precipitation,wind_speed_10m,wind_gusts_10m,precipitation_probability,sunshine_duration,weather_code,cloud_cover_low` +
+      `&daily=temperature_2m_min,temperature_2m_max,precipitation_sum,weather_code` +
+      `&timezone=UTC`;
+
+    return this.http.get<any>(url).pipe(
+      map(res => {
+        const arrayRes = Array.isArray(res) ? res : [res];
+
+        return arrayRes.map((data, idx) => {
+          const station = stations[idx];
+
+          const hourly: HourlyForecast[] = [];
+          if (data.hourly && data.hourly.time) {
+            const hTime = data.hourly.time;
+            const hTemp = data.hourly.temperature_2m || [];
+            const hPrecip = data.hourly.precipitation || [];
+            const hWind = data.hourly.wind_speed_10m || [];
+            const hGust = data.hourly.wind_gusts_10m || [];
+            const hProb = data.hourly.precipitation_probability || [];
+            const hSun = data.hourly.sunshine_duration || [];
+            const hCode = data.hourly.weather_code || [];
+            const hCloud = data.hourly.cloud_cover_low || [];
+
+            for (let i = 0; i < hTime.length; i++) {
+              hourly.push({
+                datetime: new Date(hTime[i] + 'Z'),
+                temperature: hTemp[i],
+                precipitation: hPrecip[i],
+                windSpeed: hWind[i],
+                windGust: hGust[i],
+                precipProb: hProb[i],
+                sunshine: hSun[i] !== undefined ? Math.round(hSun[i] / 60) : undefined,
+                cloudCoverLow: hCloud[i],
+                weatherIcon: hCode[i] !== undefined ? mapWmoToMeteoSwissIcon(hCode[i]) : undefined
+              });
+            }
+          }
+
+          const daily: DailyForecast[] = [];
+          if (data.daily && data.daily.time) {
+            const dTime = data.daily.time;
+            const dMin = data.daily.temperature_2m_min || [];
+            const dMax = data.daily.temperature_2m_max || [];
+            const dPrecip = data.daily.precipitation_sum || [];
+            const dCode = data.daily.weather_code || [];
+
+            for (let i = 0; i < dTime.length; i++) {
+              daily.push({
+                date: new Date(dTime[i] + 'T00:00:00Z'),
+                tempMin: dMin[i],
+                tempMax: dMax[i],
+                precipTotal: dPrecip[i],
+                weatherIcon: dCode[i] !== undefined ? mapWmoToMeteoSwissIcon(dCode[i]) : undefined
+              });
+            }
+          }
+
+          return {
+            station,
+            hourly,
+            daily,
+            fetchedAt: new Date()
+          };
+        });
+      }),
+      catchError(err => {
+        console.error('Open-Meteo query failed:', err);
+        return of(stations.map(s => ({
+          station: s,
+          hourly: [],
+          daily: [],
+          fetchedAt: new Date()
+        })));
+      })
+    );
+  }
+
+
 
   /** Find stations near a WGS84 coordinate, sorted by distance */
   private haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
