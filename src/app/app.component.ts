@@ -1,10 +1,10 @@
-import { Component, inject, ViewChild, HostListener } from '@angular/core';
+import { Component, inject, ViewChild, Renderer2, NgZone } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { MapComponent } from './map/map.component';
 import { StationPanelComponent } from './station-panel/station-panel.component';
 import { WeatherService, StationForecast } from './weather.service';
-import { switchMap, tap } from 'rxjs/operators';
-import { Subject } from 'rxjs';
+import { switchMap, tap, catchError } from 'rxjs/operators';
+import { Subject, of } from 'rxjs';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Router, ActivatedRoute } from '@angular/router';
 
@@ -52,7 +52,13 @@ import { Router, ActivatedRoute } from '@angular/router';
     .app-layout.resizing { cursor: col-resize; user-select: none; }
     .app-layout.resizing * { pointer-events: none; }
     .app-layout.resizing .resize-handle { pointer-events: all; }
-    .map-section { flex: 1; min-width: 200px; position: relative; }
+    .map-section {
+      flex: 1;
+      width: 0;
+      position: relative;
+      transform: translateZ(0);
+      will-change: transform;
+    }
     .panel-section {
       flex-shrink: 0;
       overflow: hidden;
@@ -60,6 +66,8 @@ import { Router, ActivatedRoute } from '@angular/router';
       flex-direction: column;
       min-width: 320px;
       max-width: 80vw;
+      transform: translateZ(0);
+      will-change: transform;
     }
 
     /* ── Resize handle ────────────────── */
@@ -119,6 +127,8 @@ export class AppComponent {
   private weatherService = inject(WeatherService);
   private router = inject(Router);
   private route = inject(ActivatedRoute);
+  private ngZone = inject(NgZone);
+  private renderer = inject(Renderer2);
 
   forecasts: StationForecast[] = [];
   isLoading = false;
@@ -160,14 +170,43 @@ export class AppComponent {
     });
 
     this.locationSubject.pipe(
-      tap(() => {
-        this.isLoading = true;
-        this.forecasts = [];
-      }),
       switchMap(({ lat, lon }) =>
         this.weatherService.getNearbyStations(lat, lon, 5, 80).pipe(
           tap(stations => setTimeout(() => this.mapComp?.showStations(stations), 0)),
-          switchMap(stations => this.weatherService.getForecastsForStations(stations))
+          switchMap(stations => {
+            const cached = this.weatherService.getCachedForecasts(stations);
+            if (cached) {
+              this.forecasts = cached;
+              this.isLoading = false;
+
+              // Check if cache is fresh (less than 15 minutes old). If so, skip background revalidation
+              const ageMs = Date.now() - new Date(cached[0]?.fetchedAt || Date.now()).getTime();
+              if (ageMs < 15 * 60 * 1000) {
+                return of(cached as StationForecast[]);
+              }
+
+              // Silently revalidate in background
+              return this.weatherService.getForecastsForStations(stations).pipe(
+                tap(fresh => this.weatherService.saveForecastsToCache(stations, fresh)),
+                catchError(err => {
+                  console.warn('Background revalidation failed:', err);
+                  return of(cached as StationForecast[]);
+                })
+              );
+            } else {
+              // Cold load: show spinner and clear old forecasts
+              this.isLoading = true;
+              this.forecasts = [];
+
+              return this.weatherService.getForecastsForStations(stations).pipe(
+                tap(fresh => this.weatherService.saveForecastsToCache(stations, fresh)),
+                catchError(err => {
+                  console.error('Cold load fetch failed:', err);
+                  return of([]);
+                })
+              );
+            }
+          })
         )
       ),
       takeUntilDestroyed()
@@ -190,41 +229,74 @@ export class AppComponent {
     });
   }
 
+  // Panel resize listeners
+  private resizeMouseMoveListener?: () => void;
+  private resizeMouseUpListener?: () => void;
+
   // ── Resize logic ──
   startResize(event: MouseEvent): void {
     event.preventDefault();
     this.isResizing = true;
     this.startX = event.clientX;
     this.startWidth = this.panelWidth;
+
+    this.ngZone.runOutsideAngular(() => {
+      this.resizeMouseMoveListener = this.renderer.listen('window', 'mousemove', (e: MouseEvent) => {
+        const dx = this.startX - e.clientX;
+        const newWidth = Math.max(320, Math.min(this.startWidth + dx, window.innerWidth * 0.8));
+        if (newWidth !== this.panelWidth) {
+          this.ngZone.run(() => {
+            this.panelWidth = newWidth;
+          });
+        }
+      });
+
+      this.resizeMouseUpListener = this.renderer.listen('window', 'mouseup', () => {
+        this.ngZone.run(() => {
+          this.isResizing = false;
+          localStorage.setItem('weather-panel-width', String(this.panelWidth));
+          setTimeout(() => this.mapComp?.map?.updateSize(), 50);
+        });
+        this.cleanupResizeListeners();
+      });
+    });
   }
 
   startResizeTouch(event: TouchEvent): void {
     this.isResizing = true;
     this.startX = event.touches[0].clientX;
     this.startWidth = this.panelWidth;
+
+    this.ngZone.runOutsideAngular(() => {
+      this.resizeMouseMoveListener = this.renderer.listen('window', 'touchmove', (e: TouchEvent) => {
+        const dx = this.startX - event.touches[0].clientX;
+        const newWidth = Math.max(320, Math.min(this.startWidth + dx, window.innerWidth * 0.8));
+        if (newWidth !== this.panelWidth) {
+          this.ngZone.run(() => {
+            this.panelWidth = newWidth;
+          });
+        }
+      });
+
+      this.resizeMouseUpListener = this.renderer.listen('window', 'touchend', () => {
+        this.ngZone.run(() => {
+          this.isResizing = false;
+          localStorage.setItem('weather-panel-width', String(this.panelWidth));
+          setTimeout(() => this.mapComp?.map?.updateSize(), 50);
+        });
+        this.cleanupResizeListeners();
+      });
+    });
   }
 
-  @HostListener('window:mousemove', ['$event'])
-  onMouseMove(event: MouseEvent): void {
-    if (!this.isResizing) return;
-    const dx = this.startX - event.clientX; // dragging left = bigger panel
-    this.panelWidth = Math.max(320, Math.min(this.startWidth + dx, window.innerWidth * 0.8));
-  }
-
-  @HostListener('window:mouseup')
-  @HostListener('window:touchend')
-  onMouseUp(): void {
-    if (!this.isResizing) return;
-    this.isResizing = false;
-    localStorage.setItem('weather-panel-width', String(this.panelWidth));
-    // Trigger map resize so OL recalculates viewport
-    setTimeout(() => this.mapComp?.map?.updateSize(), 50);
-  }
-
-  @HostListener('window:touchmove', ['$event'])
-  onTouchMove(event: TouchEvent): void {
-    if (!this.isResizing) return;
-    const dx = this.startX - event.touches[0].clientX;
-    this.panelWidth = Math.max(320, Math.min(this.startWidth + dx, window.innerWidth * 0.8));
+  private cleanupResizeListeners(): void {
+    if (this.resizeMouseMoveListener) {
+      this.resizeMouseMoveListener();
+      this.resizeMouseMoveListener = undefined;
+    }
+    if (this.resizeMouseUpListener) {
+      this.resizeMouseUpListener();
+      this.resizeMouseUpListener = undefined;
+    }
   }
 }

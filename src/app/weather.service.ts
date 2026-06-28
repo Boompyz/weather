@@ -89,7 +89,22 @@ export class WeatherService {
     );
   }
 
-  /** Fetch forecast for a set of stations */
+  private stacItemCache = new Map<string, any>();
+
+  private getSTACItemAssets(itemId: string): Observable<any> {
+    if (this.stacItemCache.has(itemId)) return of(this.stacItemCache.get(itemId));
+
+    return this.http.get<any>(`${STAC_BASE}/api/stac/v1/collections/${COLLECTION}/items/${itemId}`).pipe(
+      map(item => {
+        const assets = item?.assets ?? {};
+        this.stacItemCache.set(itemId, assets);
+        return assets;
+      }),
+      catchError(() => of({}))
+    );
+  }
+
+  /** Fetch forecast for a set of stations using a Web Worker */
   getForecastsForStations(stations: WeatherStation[]): Observable<StationForecast[]> {
     if (stations.length === 0) return of([]);
 
@@ -97,21 +112,57 @@ export class WeatherService {
       switchMap(itemId => {
         if (!itemId) return of(stations.map(s => ({ station: s, hourly: [], daily: [], fetchedAt: new Date() })));
 
-        const pointIds = new Set(stations.map(s => s.point_id));
+        const pointIds = stations.map(s => s.point_id);
+        const date = itemId.replace('-ch', '');
+        const urlMap: Record<string, string> = {};
+        const allParams = [...HOURLY_PARAMS, ...DAILY_PARAMS];
 
-        // Fetch all parameters in parallel
-        const hourlyFetches = HOURLY_PARAMS.map(param => this.fetchParam(itemId, param));
-        const dailyFetches  = DAILY_PARAMS.map(param => this.fetchParam(itemId, param));
+        // Fetch STAC metadata once to resolve correct asset URLs
+        return this.getSTACItemAssets(itemId).pipe(
+          switchMap(assets => {
+            for (const param of allParams) {
+              const key = Object.keys(assets).find(k => k.includes(`.${param}.csv`));
+              urlMap[param] = key ? assets[key].href : `${STAC_BASE}/${COLLECTION}/${itemId}/vnut12.lssw.${date}0000.${param}.csv`;
+            }
 
-        return forkJoin([...hourlyFetches, ...dailyFetches]).pipe(
-          map(results => {
-            const hourlyResults = results.slice(0, HOURLY_PARAMS.length);
-            const dailyResults  = results.slice(HOURLY_PARAMS.length);
+            return new Observable<StationForecast[]>(observer => {
+              // Instantiate the Web Worker!
+              const worker = new Worker(new URL('./weather.worker', import.meta.url), { type: 'module' });
 
-            return stations.map(station => {
-              const hourly = this.mergeHourlyData(station.point_id, HOURLY_PARAMS, hourlyResults);
-              const daily  = this.mergeDailyData(station.point_id, DAILY_PARAMS, dailyResults);
-              return { station, hourly, daily, fetchedAt: new Date() };
+              worker.onmessage = ({ data }) => {
+                if (data.success) {
+                  // Re-instantiate datetime/date strings back to Date objects
+                  const forecasts = data.forecasts.map((f: any) => ({
+                    ...f,
+                    hourly: f.hourly.map((h: any) => ({
+                      ...h,
+                      datetime: new Date(h.datetime)
+                    })),
+                    daily: f.daily.map((d: any) => ({
+                      ...d,
+                      date: new Date(d.date)
+                    })),
+                    fetchedAt: new Date(f.fetchedAt)
+                  }));
+                  observer.next(forecasts);
+                } else {
+                  observer.error(new Error(data.error));
+                }
+                observer.complete();
+                worker.terminate();
+              };
+
+              worker.onerror = (err) => {
+                observer.error(err);
+                observer.complete();
+                worker.terminate();
+              };
+
+              worker.postMessage({
+                urls: urlMap,
+                pointIds,
+                stations
+              });
             });
           })
         );
@@ -132,49 +183,6 @@ export class WeatherService {
         console.error('Failed to get latest item:', err);
         return of(null);
       })
-    );
-  }
-
-  private fetchParam(itemId: string, param: string): Observable<Map<number, Map<string, number>>> {
-    // Build URL: base/collection/itemId/filename.csv
-    // We need to find the asset that matches the param name
-    // Convention: assets are named like "vnut12.lssw.YYYYMMDDHHII.<param>.csv"
-    // We derive the URL pattern from itemId (format: YYYYMMDD-ch)
-    const date = itemId.replace('-ch', '');
-    const url = `${STAC_BASE}/${COLLECTION}/${itemId}/vnut12.lssw.${date}0000.${param}.csv`;
-
-    return this.http.get(url, { responseType: 'text' }).pipe(
-      map(csv => this.parseParamCsv(csv)),
-      catchError(err => {
-        // Try fetching the item to get the actual asset URL
-        return this.getAssetUrl(itemId, param).pipe(
-          switchMap(assetUrl => {
-            if (!assetUrl) return of(new Map<number, Map<string, number>>());
-            return this.http.get(assetUrl, { responseType: 'text' }).pipe(
-              map(csv => this.parseParamCsv(csv)),
-              catchError(() => of(new Map<number, Map<string, number>>()))
-            );
-          })
-        );
-      })
-    );
-  }
-
-  private assetUrlCache = new Map<string, string | null>();
-
-  private getAssetUrl(itemId: string, param: string): Observable<string | null> {
-    const cacheKey = `${itemId}:${param}`;
-    if (this.assetUrlCache.has(cacheKey)) return of(this.assetUrlCache.get(cacheKey)!);
-
-    return this.http.get<any>(`${STAC_BASE}/api/stac/v1/collections/${COLLECTION}/items/${itemId}`).pipe(
-      map(item => {
-        const assets = item?.assets ?? {};
-        const key = Object.keys(assets).find(k => k.includes(`.${param}.csv`));
-        const url = key ? assets[key].href : null;
-        this.assetUrlCache.set(cacheKey, url);
-        return url;
-      }),
-      catchError(() => of(null))
     );
   }
 
@@ -206,115 +214,68 @@ export class WeatherService {
     }).filter(s => s.point_id > 0 && s.lat !== 0 && s.lon !== 0);
   }
 
-  /** Parse a parameter CSV → Map<pointId, Map<dateStr, value>> */
-  private parseParamCsv(csv: string): Map<number, Map<string, number>> {
-    const result = new Map<number, Map<string, number>>();
-    const lines = csv.replace(/\r/g, '').split('\n').filter(l => l.trim());
-    if (lines.length < 2) return result;
-
-    const header = lines[0].split(';');
-    const idxId   = header.indexOf('point_id');
-    const idxDate = header.indexOf('Date');
-    const idxVal  = header.length - 1; // last column is the value
-
-    for (const line of lines.slice(1)) {
-      const cols = line.split(';');
-      const id  = parseInt(cols[idxId]?.trim() ?? '0');
-      const dt  = cols[idxDate]?.trim() ?? '';
-      const val = parseFloat(cols[idxVal]?.trim() ?? '');
-      if (!id || !dt || isNaN(val)) continue;
-
-      if (!result.has(id)) result.set(id, new Map());
-      result.get(id)!.set(dt, val);
-    }
-    return result;
-  }
-
-  /** Merge multiple hourly param maps into HourlyForecast[] for a station */
-  private mergeHourlyData(
-    pointId: number,
-    params: string[],
-    data: Map<number, Map<string, number>>[]
-  ): HourlyForecast[] {
-    // Collect all timestamps from the first available param
-    const allDates = new Set<string>();
-    for (const d of data) {
-      const stationData = d.get(pointId);
-      if (stationData) stationData.forEach((_, k) => allDates.add(k));
-    }
-
-    const paramData: Record<string, Map<string, number>> = {};
-    params.forEach((p, i) => {
-      paramData[p] = data[i]?.get(pointId) ?? new Map();
-    });
-
-    const sorted = [...allDates].sort();
-    return sorted.map(dt => {
-      const date = this.parseMeteoDate(dt);
-      const h: HourlyForecast = { datetime: date };
-      if (paramData['tre200h0']?.has(dt)) h.temperature     = paramData['tre200h0'].get(dt);
-      if (paramData['rre150h0']?.has(dt)) h.precipitation   = paramData['rre150h0'].get(dt);
-      if (paramData['fu3010h0']?.has(dt)) h.windSpeed        = paramData['fu3010h0'].get(dt);
-      if (paramData['fu3010h1']?.has(dt)) h.windGust         = paramData['fu3010h1'].get(dt);
-      if (paramData['rp0003i0']?.has(dt)) h.precipProb       = paramData['rp0003i0'].get(dt);
-      if (paramData['sre000h0']?.has(dt)) h.sunshine         = paramData['sre000h0'].get(dt);
-      if (paramData['jww003i0']?.has(dt)) h.weatherIcon      = paramData['jww003i0'].get(dt);
-      if (paramData['nprolohs']?.has(dt)) h.cloudCoverLow    = paramData['nprolohs'].get(dt);
-      return h;
-    });
-  }
-
-  /** Merge daily param maps into DailyForecast[] */
-  private mergeDailyData(
-    pointId: number,
-    params: string[],
-    data: Map<number, Map<string, number>>[]
-  ): DailyForecast[] {
-    const allDates = new Set<string>();
-    for (const d of data) {
-      const stationData = d.get(pointId);
-      if (stationData) stationData.forEach((_, k) => allDates.add(k));
-    }
-
-    const paramData: Record<string, Map<string, number>> = {};
-    params.forEach((p, i) => {
-      paramData[p] = data[i]?.get(pointId) ?? new Map();
-    });
-
-    const sorted = [...allDates].sort();
-    return sorted.map(dt => {
-      const date = this.parseMeteoDate(dt);
-      const d: DailyForecast = { date };
-      if (paramData['tre200pn']?.has(dt)) d.tempMin      = paramData['tre200pn'].get(dt);
-      if (paramData['tre200px']?.has(dt)) d.tempMax      = paramData['tre200px'].get(dt);
-      if (paramData['rka150p0']?.has(dt)) d.precipTotal  = paramData['rka150p0'].get(dt);
-      if (paramData['jp2000d0']?.has(dt)) d.weatherIcon  = paramData['jp2000d0'].get(dt);
-      return d;
-    });
-  }
-
-  /** Parse YYYYMMDDHHMM string to Date (UTC) */
-  private parseMeteoDate(s: string): Date {
-    const year  = parseInt(s.substring(0, 4));
-    const month = parseInt(s.substring(4, 6)) - 1;
-    const day   = parseInt(s.substring(6, 8));
-    const hour  = parseInt(s.substring(8, 10)) || 0;
-    const min   = parseInt(s.substring(10, 12)) || 0;
-    return new Date(Date.UTC(year, month, day, hour, min));
-  }
-
-  /** Haversine distance in km */
+  /** Find stations near a WGS84 coordinate, sorted by distance */
   private haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
     const R = 6371;
     const dLat = this.deg2rad(lat2 - lat1);
     const dLon = this.deg2rad(lon2 - lon1);
     const a =
-      Math.sin(dLat / 2) ** 2 +
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
       Math.cos(this.deg2rad(lat1)) * Math.cos(this.deg2rad(lat2)) *
-      Math.sin(dLon / 2) ** 2;
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
   private deg2rad(d: number) { return d * Math.PI / 180; }
+
+  private getCacheKey(stations: WeatherStation[]): string {
+    const ids = stations.map(s => s.point_id).sort().join('_');
+    return `weather_fc_${ids}`;
+  }
+
+  getCachedForecasts(stations: WeatherStation[]): StationForecast[] | null {
+    try {
+      const key = this.getCacheKey(stations);
+      const dataStr = localStorage.getItem(key);
+      if (!dataStr) return null;
+
+      const data = JSON.parse(dataStr);
+      // Validate overall age: maximum 12 hours
+      const ageMs = Date.now() - new Date(data.fetchedAt).getTime();
+      if (ageMs > 12 * 60 * 60 * 1000) {
+        localStorage.removeItem(key);
+        return null;
+      }
+
+      // Convert date strings back to Date objects
+      return data.forecasts.map((f: any) => ({
+        ...f,
+        hourly: f.hourly.map((h: any) => ({
+          ...h,
+          datetime: new Date(h.datetime)
+        })),
+        daily: f.daily.map((d: any) => ({
+          ...d,
+          date: new Date(d.date)
+        })),
+        fetchedAt: new Date(f.fetchedAt)
+      }));
+    } catch (e) {
+      return null;
+    }
+  }
+
+  saveForecastsToCache(stations: WeatherStation[], forecasts: StationForecast[]): void {
+    try {
+      const key = this.getCacheKey(stations);
+      const payload = {
+        fetchedAt: new Date(),
+        forecasts
+      };
+      localStorage.setItem(key, JSON.stringify(payload));
+    } catch (e) {
+      console.warn('Failed to save forecasts to localStorage cache:', e);
+    }
+  }
 
   /** Generate AI-ready text summary for a set of forecasts */
   generateAiText(forecasts: StationForecast[], clickedLat: number, clickedLon: number, numDays = 3): string {

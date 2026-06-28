@@ -55,13 +55,10 @@ register(proj4);
       </div>
 
       <!-- Click hint -->
-      <div class="click-hint" [class.hidden]="hasClicked">
+      <div class="click-hint" *ngIf="!hasClicked">
         <span class="material-icons">touch_app</span>
         Click anywhere on Switzerland to load nearby weather stations
       </div>
-
-      <!-- Crosshair cursor overlay -->
-      <div class="cursor-info" *ngIf="cursorInfo">{{ cursorInfo }}</div>
     </div>
   `,
   styles: [`
@@ -147,18 +144,6 @@ register(proj4);
       opacity: 0;
       transform: translateX(-50%) translateY(10px);
     }
-    .cursor-info {
-      position: absolute;
-      bottom: 8px;
-      right: 8px;
-      background: rgba(13,17,23,0.7);
-      color: #6e7681;
-      font-size: 11px;
-      padding: 3px 8px;
-      border-radius: 4px;
-      pointer-events: none;
-      font-family: monospace;
-    }
     @keyframes pulse {
       0%, 100% { opacity: 1; }
       50% { opacity: 0.4; }
@@ -175,7 +160,6 @@ export class MapComponent implements AfterViewInit, OnDestroy {
 
   map!: Map;
   hasClicked = false;
-  cursorInfo: string | null = null;
   activeLayer: 'colour' | 'bw' | 'satellite' = 'colour';
 
   private selectedMarkerSource = new VectorSource();
@@ -262,123 +246,127 @@ export class MapComponent implements AfterViewInit, OnDestroy {
         this.locationSelected.emit({ lat: lonLat[1], lon: lonLat[0] });
       });
     });
-
-    this.map.on('pointermove', (evt: MapBrowserEvent<any>) => {
-      const lonLat = toLonLat(evt.coordinate);
-      this.ngZone.run(() => {
-        this.cursorInfo = `${lonLat[1].toFixed(4)}°N  ${lonLat[0].toFixed(4)}°E`;
-      });
-    });
   }
 
   /** Called when a search result is selected — fly to it and trigger station load */
   onSearchSelected(result: AutocompleteResult): void {
-    this.previewMarkerSource.clear();
-    const coord = fromLonLat([result.lon, result.lat]);
-    this.map.getView().animate({
-      center: coord,
-      zoom: Math.min(result.z, 14),
-      duration: 800,
-      easing: easeOut
-    });
-    // Emit as a location click so the panel loads stations
-    this.ngZone.run(() => {
-      this.hasClicked = true;
-      this.placeSelectedMarker(coord);
-      this.locationSelected.emit({ lat: result.lat, lon: result.lon });
+    this.ngZone.runOutsideAngular(() => {
+      this.previewMarkerSource.clear();
+      const coord = fromLonLat([result.lon, result.lat]);
+      this.map.getView().animate({
+        center: coord,
+        zoom: Math.min(result.z, 14),
+        duration: 800,
+        easing: easeOut
+      });
+      this.ngZone.run(() => {
+        this.hasClicked = true;
+        this.placeSelectedMarker(coord);
+        this.locationSelected.emit({ lat: result.lat, lon: result.lon });
+      });
     });
   }
 
   /** Show a preview pin while hovering a search result */
   onSearchPreview(result: AutocompleteResult | null): void {
-    this.previewMarkerSource.clear();
-    if (!result) return;
-    const coord = fromLonLat([result.lon, result.lat]);
-    const pinSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="36" viewBox="0 0 28 36">
-      <path fill="#39d0f5" stroke="#0d1117" stroke-width="1.5"
-        d="M14 2C8.48 2 4 6.48 4 12c0 7 10 22 10 22s10-15 10-22c0-5.52-4.48-10-10-10z"/>
-      <circle cx="14" cy="12" r="4" fill="white" opacity="0.9"/>
-    </svg>`;
-    const pin = new Feature({ geometry: new Point(coord) });
-    pin.setStyle(new Style({
-      image: new Icon({
-        src: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(pinSvg),
-        anchor: [0.5, 1],
-        scale: 1.1
-      })
-    }));
-    this.previewMarkerSource.addFeature(pin);
+    this.ngZone.runOutsideAngular(() => {
+      this.previewMarkerSource.clear();
+      if (!result) return;
+      const coord = fromLonLat([result.lon, result.lat]);
+      const pinSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="36" viewBox="0 0 28 36">
+        <path fill="#39d0f5" stroke="#0d1117" stroke-width="1.5"
+          d="M14 2C8.48 2 4 6.48 4 12c0 7 10 22 10 22s10-15 10-22c0-5.52-4.48-10-10-10z"/>
+        <circle cx="14" cy="12" r="4" fill="white" opacity="0.9"/>
+      </svg>`;
+      const pin = new Feature({ geometry: new Point(coord) });
+      pin.setStyle(new Style({
+        image: new Icon({
+          src: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(pinSvg),
+          anchor: [0.5, 1],
+          scale: 1.1
+        })
+      }));
+      this.previewMarkerSource.addFeature(pin);
+    });
   }
 
   selectCoordinate(lat: number, lon: number): void {
-    if (!this.map) return;
-    const coord = fromLonLat([lon, lat]);
-    this.hasClicked = true;
-    this.placeSelectedMarker(coord);
-    this.map.getView().animate({
-      center: coord,
-      zoom: 11,
-      duration: 500,
-      easing: easeOut
+    this.ngZone.runOutsideAngular(() => {
+      if (!this.map) return;
+      const coord = fromLonLat([lon, lat]);
+      this.hasClicked = true;
+      this.placeSelectedMarker(coord);
+      this.map.getView().animate({
+        center: coord,
+        zoom: 11,
+        duration: 500,
+        easing: easeOut
+      });
     });
   }
 
   setLayer(layer: 'colour' | 'bw' | 'satellite'): void {
     this.activeLayer = layer;
-    this.bwLayer.setVisible(layer === 'bw');
-    this.colourLayer.setVisible(layer === 'colour');
-    this.satelliteLayer.setVisible(layer === 'satellite');
+    this.ngZone.runOutsideAngular(() => {
+      this.bwLayer.setVisible(layer === 'bw');
+      this.colourLayer.setVisible(layer === 'colour');
+      this.satelliteLayer.setVisible(layer === 'satellite');
+    });
   }
 
   placeSelectedMarker(coord: Coordinate): void {
-    this.selectedMarkerSource.clear();
-    // Ripple ring
-    const ring = new Feature({ geometry: new Point(coord) });
-    ring.setStyle(new Style({
-      image: new Circle({
-        radius: 18,
-        fill: new Fill({ color: 'rgba(88,166,255,0.12)' }),
-        stroke: new Stroke({ color: 'rgba(88,166,255,0.6)', width: 2 })
-      })
-    }));
-    // Centre dot
-    const dot = new Feature({ geometry: new Point(coord) });
-    dot.setStyle(new Style({
-      image: new Circle({
-        radius: 7,
-        fill: new Fill({ color: '#58a6ff' }),
-        stroke: new Stroke({ color: '#ffffff', width: 2 })
-      })
-    }));
-    this.selectedMarkerSource.addFeature(ring);
-    this.selectedMarkerSource.addFeature(dot);
+    this.ngZone.runOutsideAngular(() => {
+      this.selectedMarkerSource.clear();
+      // Ripple ring
+      const ring = new Feature({ geometry: new Point(coord) });
+      ring.setStyle(new Style({
+        image: new Circle({
+          radius: 18,
+          fill: new Fill({ color: 'rgba(88,166,255,0.12)' }),
+          stroke: new Stroke({ color: 'rgba(88,166,255,0.6)', width: 2 })
+        })
+      }));
+      // Centre dot
+      const dot = new Feature({ geometry: new Point(coord) });
+      dot.setStyle(new Style({
+        image: new Circle({
+          radius: 7,
+          fill: new Fill({ color: '#58a6ff' }),
+          stroke: new Stroke({ color: '#ffffff', width: 2 })
+        })
+      }));
+      this.selectedMarkerSource.addFeature(ring);
+      this.selectedMarkerSource.addFeature(dot);
+    });
   }
 
   showStations(stations: WeatherStation[]): void {
-    this.stationMarkerSource.clear();
-    stations.forEach((s, i) => {
-      const coord = fromLonLat([s.lon, s.lat]);
-      const feature = new Feature({ geometry: new Point(coord) });
+    this.ngZone.runOutsideAngular(() => {
+      this.stationMarkerSource.clear();
+      stations.forEach((s, i) => {
+        const coord = fromLonLat([s.lon, s.lat]);
+        const feature = new Feature({ geometry: new Point(coord) });
 
-      // Color by distance rank
-      const colors = ['#f0c000', '#3fb950', '#58a6ff', '#bc8cff', '#f85149'];
-      const color = colors[i] ?? '#8b949e';
+        // Color by distance rank
+        const colors = ['#f0c000', '#3fb950', '#58a6ff', '#bc8cff', '#f85149'];
+        const color = colors[i] ?? '#8b949e';
 
-      feature.setStyle(new Style({
-        image: new Circle({
-          radius: 9,
-          fill: new Fill({ color }),
-          stroke: new Stroke({ color: '#0d1117', width: 2 })
-        }),
-        text: new Text({
-          text: s.station_abbr,
-          offsetY: -18,
-          font: 'bold 11px Inter, sans-serif',
-          fill: new Fill({ color }),
-          stroke: new Stroke({ color: 'rgba(13,17,23,0.9)', width: 3 })
-        })
-      }));
-      this.stationMarkerSource.addFeature(feature);
+        feature.setStyle(new Style({
+          image: new Circle({
+            radius: 9,
+            fill: new Fill({ color }),
+            stroke: new Stroke({ color: '#0d1117', width: 2 })
+          }),
+          text: new Text({
+            text: s.station_abbr,
+            offsetY: -18,
+            font: 'bold 11px Inter, sans-serif',
+            fill: new Fill({ color }),
+            stroke: new Stroke({ color: 'rgba(13,17,23,0.9)', width: 3 })
+          })
+        }));
+        this.stationMarkerSource.addFeature(feature);
+      });
     });
   }
 
